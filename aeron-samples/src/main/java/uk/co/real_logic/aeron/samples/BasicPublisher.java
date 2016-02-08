@@ -55,7 +55,7 @@ public class BasicPublisher
         final Aeron.Context ctx = new Aeron.Context();
         if (EMBEDDED_MEDIA_DRIVER)
         {
-            ctx.dirName(driver.contextDirName());
+            ctx.aeronDirectoryName(driver.aeronDirectoryName());
         }
 
         // Connect a new Aeron instance to the media driver and create a publication on
@@ -68,11 +68,12 @@ public class BasicPublisher
             for (int i = 0; i < NUMBER_OF_MESSAGES; i++)
             {
                 final String message = "Hello World! " + i;
-                BUFFER.putBytes(0, message.getBytes());
+                final byte[] messageBytes = message.getBytes();
+                BUFFER.putBytes(0, messageBytes);
 
                 System.out.print("offering " + i + "/" + NUMBER_OF_MESSAGES);
 
-                final long result = publication.offer(BUFFER, 0, message.getBytes().length);
+                final long result = publication.offer(BUFFER, 0, messageBytes.length);
 
                 if (result < 0L)
                 {
@@ -84,6 +85,15 @@ public class BasicPublisher
                     {
                         System.out.println("Offer failed because publisher is not yet connected to subscriber");
                     }
+                    else if (result == Publication.ADMIN_ACTION)
+                    {
+                        System.out.println("Offer failed because of an administration action in the system");
+                    }
+                    else if (result == Publication.CLOSED)
+                    {
+                        System.out.println("Offer failed publication is closed");
+                        break;
+                    }
                     else
                     {
                         System.out.println("Offer failed due to unknown reason");
@@ -92,6 +102,11 @@ public class BasicPublisher
                 else
                 {
                     System.out.println("yay!");
+                }
+
+                if (!publication.isStillConnected())
+                {
+                    System.out.println("No active subscribers detected");
                 }
 
                 Thread.sleep(TimeUnit.SECONDS.toMillis(1));

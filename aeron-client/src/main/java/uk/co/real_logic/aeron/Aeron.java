@@ -57,8 +57,10 @@ public final class Aeron implements AutoCloseable
             }
         };
 
-
     private static final long IDLE_SLEEP_NS = TimeUnit.MILLISECONDS.toNanos(4);
+    private static final long KEEPALIVE_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(500);
+    private static final long INTER_SERVICE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
+    private static final long PUBLICATION_CONNECTION_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(5);
 
     private final ClientConductor conductor;
     private final AgentRunner conductorRunner;
@@ -77,11 +79,26 @@ public final class Aeron implements AutoCloseable
             ctx.counterValuesBuffer(),
             new DriverProxy(ctx.toDriverBuffer),
             ctx.errorHandler,
-            ctx.newImageHandler,
-            ctx.inactiveImageHandler,
-            ctx.mediaDriverTimeout());
+            ctx.availableImageHandler,
+            ctx.unavailableImageHandler,
+            ctx.keepAliveInterval(),
+            ctx.driverTimeoutMs(),
+            ctx.interServiceTimeout(),
+            ctx.publicationConnectionTimeout());
 
         conductorRunner = new AgentRunner(ctx.idleStrategy, ctx.errorHandler, null, conductor);
+    }
+
+    /**
+     * Create an Aeron instance and connect to the media driver with a default {@link Context}.
+     * <p>
+     * Threads required for interacting with the media driver are created and managed within the Aeron instance.
+     *
+     * @return the new {@link Aeron} instance connected to the Media Driver.
+     */
+    public static Aeron connect()
+    {
+        return new Aeron(new Context()).start();
     }
 
     /**
@@ -108,8 +125,6 @@ public final class Aeron implements AutoCloseable
 
     /**
      * Add a {@link Publication} for publishing messages to subscribers.
-     * <p>
-     * A session id will be generated for this publication.
      *
      * @param channel  for receiving the messages known to the media layer.
      * @param streamId within the channel scope.
@@ -117,29 +132,7 @@ public final class Aeron implements AutoCloseable
      */
     public Publication addPublication(final String channel, final int streamId)
     {
-        return addPublication(channel, streamId, 0);
-    }
-
-    /**
-     * Add a {@link Publication} for publishing messages to subscribers.
-     * <p>
-     * If the sessionId is 0, then a random one will be generated.
-     *
-     * @param channel   for receiving the messages known to the media layer.
-     * @param streamId  within the channel scope.
-     * @param sessionId To identify the Publication instance within a channel and streamId pair.
-     * @return the new Publication.
-     */
-    public Publication addPublication(final String channel, final int streamId, final int sessionId)
-    {
-        int sessionIdToRequest = sessionId;
-
-        if (0 == sessionId)
-        {
-            sessionIdToRequest = BitUtil.generateRandomisedId();
-        }
-
-        return conductor.addPublication(channel, streamId, sessionIdToRequest);
+        return conductor.addPublication(channel, streamId);
     }
 
     /**
@@ -181,8 +174,11 @@ public final class Aeron implements AutoCloseable
         private DirectBuffer cncMetaDataBuffer;
         private LogBuffersFactory logBuffersFactory;
         private ErrorHandler errorHandler;
-        private NewImageHandler newImageHandler;
-        private InactiveImageHandler inactiveImageHandler;
+        private AvailableImageHandler availableImageHandler;
+        private UnavailableImageHandler unavailableImageHandler;
+        private long keepAliveInterval = KEEPALIVE_INTERVAL_NS;
+        private long interServiceTimeout = INTER_SERVICE_TIMEOUT_NS;
+        private long publicationConnectionTimeout = PUBLICATION_CONNECTION_TIMEOUT_MS;
 
         /**
          * This is called automatically by {@link Aeron#connect(Aeron.Context)} and its overloads.
@@ -248,6 +244,8 @@ public final class Aeron implements AutoCloseable
                     counterValuesBuffer(CncFileDescriptor.createCounterValuesBuffer(cncByteBuffer, cncMetaDataBuffer));
                 }
 
+                interServiceTimeout = CncFileDescriptor.clientLivenessTimeout(cncMetaDataBuffer);
+
                 if (null == logBuffersFactory)
                 {
                     logBuffersFactory = new MappedLogBuffersFactory();
@@ -258,14 +256,14 @@ public final class Aeron implements AutoCloseable
                     errorHandler = DEFAULT_ERROR_HANDLER;
                 }
 
-                if (null == newImageHandler)
+                if (null == availableImageHandler)
                 {
-                    newImageHandler = (image, channel, streamId, sessionId, joiningPosition, sourceIdentity) -> { };
+                    availableImageHandler = (image) -> { };
                 }
 
-                if (null == inactiveImageHandler)
+                if (null == unavailableImageHandler)
                 {
-                    inactiveImageHandler = (image, channel, streamId, sessionId, position) -> { };
+                    unavailableImageHandler = (image) -> { };
                 }
             }
             catch (final Exception ex)
@@ -366,27 +364,49 @@ public final class Aeron implements AutoCloseable
         }
 
         /**
-         * Set up a callback for when a new {@link Image} is created.
+         * Set up a callback for when an {@link Image} is available.
          *
-         * @param handler Callback method for handling new connection notifications.
+         * @param handler Callback method for handling available image notifications.
          * @return this Aeron.Context for method chaining.
          */
-        public Context newImageHandler(final NewImageHandler handler)
+        public Context availableImageHandler(final AvailableImageHandler handler)
         {
-            this.newImageHandler = handler;
+            this.availableImageHandler = handler;
             return this;
         }
 
         /**
-         * Set up a callback for when a {@link Image} determined to be inactive.
+         * Set up a callback for when an {@link Image} is unavailable.
          *
-         * @param handler Callback method for handling inactive image notifications.
+         * @param handler Callback method for handling unavailable image notifications.
          * @return this Aeron.Context for method chaining.
          */
-        public Context inactiveImageHandler(final InactiveImageHandler handler)
+        public Context unavailableImageHandler(final UnavailableImageHandler handler)
         {
-            this.inactiveImageHandler = handler;
+            this.unavailableImageHandler = handler;
             return this;
+        }
+
+        /**
+         * Set the interval in nanoseconds for which the client will perform keep-alive operations.
+         *
+         * @param value the interval in nanoseconds for which the client will perform keep-alive operations.
+         * @return this Aeron.Context for method chaining.
+         */
+        public Context keepAliveInterval(final long value)
+        {
+            keepAliveInterval = value;
+            return this;
+        }
+
+        /**
+         * Get the interval in nanoseconds for which the client will perform keep-alive operations.
+         *
+         * @return the interval in nanoseconds for which the client will perform keep-alive operations.
+         */
+        public long keepAliveInterval()
+        {
+            return keepAliveInterval;
         }
 
         /**
@@ -398,21 +418,58 @@ public final class Aeron implements AutoCloseable
          * @return this Aeron.Context for method chaining.
          * @see #errorHandler(ErrorHandler)
          */
-        public Context mediaDriverTimeout(final long value)
+        public Context driverTimeoutMs(final long value)
         {
-            driverTimeoutMs(value);
+            super.driverTimeoutMs(value);
             return this;
         }
 
         /**
-         * Get the amount of time, in milliseconds, that this client will wait until it determines the
-         * Media Driver is unavailable.
+         * Return the timeout between service calls for the client.
          *
-         * @return Number of milliseconds.
+         * When exceeded, {@link #errorHandler} will be called and the active {@link Publication}s and {@link Image}s
+         * closed.
+         *
+         * This value is controlled by the driver and included in the CnC file.
+         *
+         * @return the timeout between service calls in nanoseconds.
          */
-        public long mediaDriverTimeout()
+        public long interServiceTimeout()
         {
-            return driverTimeoutMs();
+            return interServiceTimeout;
+        }
+
+        /**
+         * @see CommonContext#aeronDirectoryName(String)
+         */
+        public Context aeronDirectoryName(String dirName)
+        {
+            super.aeronDirectoryName(dirName);
+            return this;
+        }
+
+        /**
+         * Set the amount of time, in milliseconds, that this client will use to determine if a {@link Publication}
+         * has active subscribers or not.
+         *
+         * @param value number of milliseconds.
+         * @return this Aeron.Context for method chaining.
+         */
+        public Context publicationConnectionTimeout(final long value)
+        {
+            publicationConnectionTimeout = value;
+            return this;
+        }
+
+        /**
+         * Return the timeout, in milliseconds, that this client will use to determine if a {@link Publication}
+         * has active subscribers or not.
+         *
+         * @return timeout in milliseconds.
+         */
+        public long publicationConnectionTimeout()
+        {
+            return publicationConnectionTimeout;
         }
 
         /**

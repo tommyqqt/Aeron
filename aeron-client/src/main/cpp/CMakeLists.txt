@@ -36,7 +36,9 @@ SET(HEADERS
     DriverProxy.h
     DriverListenerAdapter.h
     LogBuffers.h
+    BufferBuilder.h
     FragmentAssembler.h
+    ControlledFragmentAssembler.h
     command/ImageMessageFlyweight.h
     command/ImageBuffersReadyFlyweight.h
     command/ControlProtocolEvents.h
@@ -65,6 +67,7 @@ SET(HEADERS
     concurrent/logbuffer/DataFrameHeader.h
     concurrent/logbuffer/FrameDescriptor.h
     concurrent/logbuffer/Header.h
+    concurrent/logbuffer/HeaderWriter.h
     concurrent/logbuffer/TermAppender.h
     concurrent/logbuffer/LogBufferPartition.h
     concurrent/logbuffer/LogBufferDescriptor.h
@@ -81,6 +84,7 @@ SET(HEADERS
     util/CommandOptionParser.h
     util/StringUtil.h
     util/Exceptions.h
+    util/LangUtil.h
     util/MacroUtil.h
     util/ScopeUtils.h
     util/BitUtil.h

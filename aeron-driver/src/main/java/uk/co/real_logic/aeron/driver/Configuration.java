@@ -15,6 +15,7 @@
  */
 package uk.co.real_logic.aeron.driver;
 
+import uk.co.real_logic.aeron.driver.event.EventLogger;
 import uk.co.real_logic.agrona.BitUtil;
 import uk.co.real_logic.agrona.LangUtil;
 import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
@@ -34,6 +35,8 @@ import static uk.co.real_logic.aeron.driver.ThreadingMode.DEDICATED;
  */
 public class Configuration
 {
+    private static final String DEFAULT_IDLE_STRATEGY = "uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy";
+
     /**
      * Byte buffer length (in bytes) for reads
      */
@@ -65,7 +68,7 @@ public class Configuration
     public static final String COUNTER_VALUES_BUFFER_LENGTH_PROP_NAME = "aeron.dir.counters.length";
 
     /**
-     * Property name for length of the initial window
+     * Property name for length of the initial window  which must be sufficient for Bandwidth Delay Produce (BDP).
      */
     public static final String INITIAL_WINDOW_LENGTH_PROP_NAME = "aeron.rcv.initial.window.length";
 
@@ -75,12 +78,12 @@ public class Configuration
     public static final String STATUS_MESSAGE_TIMEOUT_PROP_NAME = "aeron.rcv.status.message.timeout";
 
     /**
-     * Property name for SO_RCVBUF setting on UDP sockets
+     * Property name for SO_RCVBUF setting on UDP sockets which must be sufficient for Bandwidth Delay Produce (BDP).
      */
     public static final String SOCKET_RCVBUF_LENGTH_PROP_NAME = "aeron.socket.so_rcvbuf";
 
     /**
-     * Property name for SO_SNDBUF setting on UDP sockets
+     * Property name for SO_SNDBUF setting on UDP sockets  which must be sufficient for Bandwidth Delay Produce (BDP).
      */
     public static final String SOCKET_SNDBUF_LENGTH_PROP_NAME = "aeron.socket.so_sndbuf";
 
@@ -96,12 +99,6 @@ public class Configuration
     public static final int PUBLICATION_TERM_WINDOW_LENGTH = getInteger(PUBLICATION_TERM_WINDOW_LENGTH_PROP_NAME, 0);
 
     /**
-     * Property name for window limit on subscription side
-     */
-    public static final String SUBSCRIPTION_TERM_WINDOW_ENGTH_PROP_NAME = "aeron.subscription.term.window.length";
-    public static final int SUBSCRIPTION_TERM_WINDOW_LENGTH = getInteger(SUBSCRIPTION_TERM_WINDOW_ENGTH_PROP_NAME, 0);
-
-    /**
      * Property name for client liveness timeout
      */
     public static final String CLIENT_LIVENESS_TIMEOUT_PROP_NAME = "aeron.client.liveness.timeout";
@@ -110,6 +107,11 @@ public class Configuration
      * Property name for image liveness timeout
      */
     public static final String IMAGE_LIVENESS_TIMEOUT_PROP_NAME = "aeron.image.liveness.timeout";
+
+    /**
+     * Property name for publication unblock timeout
+     */
+    public static final String PUBLICATION_UNBLOCK_TIMEOUT_PROP_NAME = "aeron.publication.unblock.timeout";
 
     /**
      * Property name for data loss rate
@@ -130,6 +132,24 @@ public class Configuration
      * Property name for control loss seed
      */
     public static final String CONTROL_LOSS_SEED_PROP_NAME = "aeron.debug.control.loss.seed";
+
+    /**
+     * Default term buffer length.
+     */
+    public static final int TERM_BUFFER_IPC_LENGTH_DEFAULT = 64 * 1024 * 1024;
+
+    /**
+     * Property name for term buffer length (in bytes) for IPC logbuffers
+     */
+    public static final String IPC_TERM_BUFFER_LENGTH_PROP_NAME = "aeron.ipc.term.buffer.length";
+    public static final int IPC_TERM_BUFFER_LENGTH = getInteger(IPC_TERM_BUFFER_LENGTH_PROP_NAME, TERM_BUFFER_IPC_LENGTH_DEFAULT);
+
+    /**
+     * Property name for window limit for IPC publications
+     */
+    public static final String IPC_PUBLICATION_TERM_WINDOW_LENGTH_PROP_NAME = "aeron.ipc.publication.term.window.length";
+    public static final int IPC_PUBLICATION_TERM_WINDOW_LENGTH = getInteger(
+        IPC_PUBLICATION_TERM_WINDOW_LENGTH_PROP_NAME, 0);
 
     /**
      * Default byte buffer length for reads
@@ -189,7 +209,7 @@ public class Configuration
      * Multicast NAK delay is immediate initial with delayed subsequent delay
      */
     public static final OptimalMulticastDelayGenerator NAK_MULTICAST_DELAY_GENERATOR = new OptimalMulticastDelayGenerator(
-        Configuration.NAK_MAX_BACKOFF_DEFAULT, Configuration.NAK_GROUPSIZE_DEFAULT, Configuration.NAK_GRTT_DEFAULT);
+        NAK_MAX_BACKOFF_DEFAULT, NAK_GROUPSIZE_DEFAULT, NAK_GRTT_DEFAULT);
 
     /**
      * Default Unicast NAK delay in nanoseconds
@@ -199,13 +219,7 @@ public class Configuration
      * Unicast NAK delay is immediate initial with delayed subsequent delay
      */
     public static final StaticDelayGenerator NAK_UNICAST_DELAY_GENERATOR = new StaticDelayGenerator(
-        Configuration.NAK_UNICAST_DELAY_DEFAULT_NS, true);
-
-    /**
-     * NAKs are effectively disabled.
-     */
-    public static final StaticDelayGenerator NO_NAK_DELAY_GENERATOR = new StaticDelayGenerator(
-            -1, false);
+        NAK_UNICAST_DELAY_DEFAULT_NS, true);
 
     /**
      * Default delay for retransmission of data for unicast
@@ -278,26 +292,54 @@ public class Configuration
         IMAGE_LIVENESS_TIMEOUT_PROP_NAME, IMAGE_LIVENESS_TIMEOUT_DEFAULT_NS);
 
     /**
-     * ticksPerWheel for TimerWheel in conductor thread
+     * Timeout for publication unblock in nanoseconds
      */
-    public static final int CONDUCTOR_TICKS_PER_WHEEL = 1024;
-
-    /**
-     * tickDuration (in MICROSECONDS) for TimerWheel in conductor thread
-     */
-    public static final int CONDUCTOR_TICK_DURATION_US = 10 * 1000;
-
-    /**
-     * {@link IdleStrategy} to be employed by agents.
-     */
-    public static final String AGENT_IDLE_STRATEGY_PROP_NAME = "aeron.agent.idle.strategy";
-    public static final String AGENT_IDLE_STRATEGY = getProperty(
-        AGENT_IDLE_STRATEGY_PROP_NAME, "uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy");
+    public static final long PUBLICATION_UNBLOCK_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(10);
+    public static final long PUBLICATION_UNBLOCK_TIMEOUT_NS = getLong(
+        PUBLICATION_UNBLOCK_TIMEOUT_PROP_NAME, PUBLICATION_UNBLOCK_TIMEOUT_DEFAULT_NS);
 
     public static final long AGENT_IDLE_MAX_SPINS = 20;
     public static final long AGENT_IDLE_MAX_YIELDS = 50;
     public static final long AGENT_IDLE_MIN_PARK_NS = TimeUnit.NANOSECONDS.toNanos(1);
     public static final long AGENT_IDLE_MAX_PARK_NS = TimeUnit.MICROSECONDS.toNanos(100);
+
+    /**
+     * {@link IdleStrategy} to be employed by {@link Sender} for {@link ThreadingMode#DEDICATED}.
+     */
+    public static final String SENDER_IDLE_STRATEGY_PROP_NAME = "aeron.sender.idle.strategy";
+    public static final String SENDER_IDLE_STRATEGY = getProperty(
+        SENDER_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
+
+    /**
+     * {@link IdleStrategy} to be employed by {@link DriverConductor} for {@link ThreadingMode#DEDICATED}
+     * and {@link ThreadingMode#SHARED_NETWORK}.
+     */
+    public static final String CONDUCTOR_IDLE_STRATEGY_PROP_NAME = "aeron.conductor.idle.strategy";
+    public static final String CONDUCTOR_IDLE_STRATEGY = getProperty(
+        CONDUCTOR_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
+
+    /**
+     * {@link IdleStrategy} to be employed by {@link Receiver} for {@link ThreadingMode#DEDICATED}.
+     */
+    public static final String RECEIVER_IDLE_STRATEGY_PROP_NAME = "aeron.receiver.idle.strategy";
+    public static final String RECEIVER_IDLE_STRATEGY = getProperty(
+        RECEIVER_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
+
+    /**
+     * {@link IdleStrategy} to be employed by {@link Sender} and {@link Receiver} for
+     * {@link ThreadingMode#SHARED_NETWORK}.
+     */
+    public static final String SHARED_NETWORK_IDLE_STRATEGY_PROP_NAME = "aeron.sharednetwork.idle.strategy";
+    public static final String SHARED_NETWORK_IDLE_STRATEGY = getProperty(
+        SHARED_NETWORK_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
+
+    /**
+     * {@link IdleStrategy} to be employed by {@link Sender}, {@link Receiver}, and {@link DriverConductor}
+     * for {@link ThreadingMode#SHARED}.
+     */
+    public static final String SHARED_IDLE_STRATEGY_PROP_NAME = "aeron.shared.idle.strategy";
+    public static final String SHARED_IDLE_STRATEGY = getProperty(
+        SHARED_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
 
     /** Capacity for the command queues used between driver agents. */
     public static final int CMD_QUEUE_CAPACITY = 1024;
@@ -335,34 +377,40 @@ public class Configuration
     public static final String THREADING_MODE_PROP_NAME = "aeron.threading.mode";
     public static final String THREADING_MODE_DEFAULT = DEDICATED.name();
 
-    /** Disable sending NAKs from the media driver. */
-    public static final String DO_NOT_SEND_NAK_PROP_NAME = "aeron.driver.disable.naks";
-
     /**
      * how often to check liveness and cleanup
      */
     public static final long HEARTBEAT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
-    /**
-     * How far ahead the receiver can get from the subscriber position.
-     *
-     * @param termCapacity to be used when {@link #SUBSCRIPTION_TERM_WINDOW_LENGTH} is not set.
-     * @return the length to be used for the subscription window.
-     */
-    public static int subscriptionTermWindowLength(final int termCapacity)
-    {
-        return 0 != SUBSCRIPTION_TERM_WINDOW_LENGTH ? SUBSCRIPTION_TERM_WINDOW_LENGTH : termCapacity / 2;
-    }
+    public static final String SEND_CHANNEL_ENDPOINT_SUPPLIER_PROP_NAME = "aeron.SendChannelEndpoint.supplier";
+
+    public static final String SEND_CHANNEL_ENDPOINT_SUPPLIER_DEFAULT =
+        EventLogger.IS_FRAME_LOGGING_ENABLED ?
+            "uk.co.real_logic.aeron.driver.DebugSendChannelEndpointSupplier" :
+            "uk.co.real_logic.aeron.driver.DefaultSendChannelEndpointSupplier";
+
+    public static final String SEND_CHANNEL_ENDPOINT_SUPPLIER = getProperty(
+        SEND_CHANNEL_ENDPOINT_SUPPLIER_PROP_NAME, SEND_CHANNEL_ENDPOINT_SUPPLIER_DEFAULT);
+
+    public static final String RECEIVE_CHANNEL_ENDPOINT_SUPPLIER_PROP_NAME = "aeron.ReceiveChannelEndpoint.supplier";
+
+    public static final String RECEIVE_CHANNEL_ENDPOINT_SUPPLIER_DEFAULT =
+        EventLogger.IS_FRAME_LOGGING_ENABLED ?
+            "uk.co.real_logic.aeron.driver.DebugReceiveChannelEndpointSupplier" :
+            "uk.co.real_logic.aeron.driver.DefaultReceiveChannelEndpointSupplier";
+
+    public static final String RECEIVE_CHANNEL_ENDPOINT_SUPPLIER = getProperty(
+        RECEIVE_CHANNEL_ENDPOINT_SUPPLIER_PROP_NAME, RECEIVE_CHANNEL_ENDPOINT_SUPPLIER_DEFAULT);
 
     /**
      * How far ahead the publisher can get from the sender position.
      *
-     * @param termCapacity to be used when {@link #PUBLICATION_TERM_WINDOW_LENGTH} is not set.
+     * @param termBufferLength to be used when {@link #PUBLICATION_TERM_WINDOW_LENGTH} is not set.
      * @return the length to be used for the publication window.
      */
-    public static int publicationTermWindowLength(final int termCapacity)
+    public static int publicationTermWindowLength(final int termBufferLength)
     {
-        return 0 != PUBLICATION_TERM_WINDOW_LENGTH ? PUBLICATION_TERM_WINDOW_LENGTH : termCapacity / 2;
+        return 0 != PUBLICATION_TERM_WINDOW_LENGTH ? PUBLICATION_TERM_WINDOW_LENGTH : termBufferLength / 2;
     }
 
     /**
@@ -392,29 +440,53 @@ public class Configuration
         }
     }
 
-    public static IdleStrategy agentIdleStrategy()
+    public static IdleStrategy agentIdleStrategy(final String name)
     {
         IdleStrategy idleStrategy = null;
-        switch (AGENT_IDLE_STRATEGY)
-        {
-            case "uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy":
-                idleStrategy = new BackoffIdleStrategy(
-                    AGENT_IDLE_MAX_SPINS, AGENT_IDLE_MAX_YIELDS, AGENT_IDLE_MIN_PARK_NS, AGENT_IDLE_MAX_PARK_NS);
-                break;
 
-            default:
-                try
-                {
-                    idleStrategy = (IdleStrategy)Class.forName(AGENT_IDLE_STRATEGY).newInstance();
-                }
-                catch (final Exception ex)
-                {
-                    LangUtil.rethrowUnchecked(ex);
-                }
-                break;
+        if (name.equals(DEFAULT_IDLE_STRATEGY))
+        {
+            idleStrategy = new BackoffIdleStrategy(
+                AGENT_IDLE_MAX_SPINS, AGENT_IDLE_MAX_YIELDS, AGENT_IDLE_MIN_PARK_NS, AGENT_IDLE_MAX_PARK_NS);
+        }
+        else
+        {
+            try
+            {
+                idleStrategy = (IdleStrategy)Class.forName(name).newInstance();
+            }
+            catch (final Exception ex)
+            {
+                LangUtil.rethrowUnchecked(ex);
+            }
         }
 
         return idleStrategy;
+    }
+
+    public static IdleStrategy senderIdleStrategy()
+    {
+        return agentIdleStrategy(SENDER_IDLE_STRATEGY);
+    }
+
+    public static IdleStrategy conductorIdleStrategy()
+    {
+        return agentIdleStrategy(CONDUCTOR_IDLE_STRATEGY);
+    }
+
+    public static IdleStrategy receiverIdleStrategy()
+    {
+        return agentIdleStrategy(RECEIVER_IDLE_STRATEGY);
+    }
+
+    public static IdleStrategy sharedNetworkIdleStrategy()
+    {
+        return agentIdleStrategy(SHARED_NETWORK_IDLE_STRATEGY);
+    }
+
+    public static IdleStrategy sharedIdleStrategy()
+    {
+        return agentIdleStrategy(SHARED_IDLE_STRATEGY);
     }
 
     public static FlowControl unicastFlowControlStrategy()
@@ -422,7 +494,7 @@ public class Configuration
         FlowControl flowControl = null;
         try
         {
-             flowControl = (FlowControl)Class.forName(UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
+            flowControl = (FlowControl)Class.forName(UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
         }
         catch (final Exception ex)
         {
@@ -452,7 +524,7 @@ public class Configuration
         return getInteger(TERM_BUFFER_LENGTH_PROP_NAME, TERM_BUFFER_LENGTH_DEFAULT);
     }
 
-    public static int termBufferLengthMax()
+    public static int maxTermBufferLength()
     {
         return getInteger(TERM_BUFFER_MAX_LENGTH_PROP_NAME, TERM_BUFFER_LENGTH_MAX_DEFAULT);
     }
@@ -502,8 +574,67 @@ public class Configuration
         return ThreadingMode.valueOf(getProperty(THREADING_MODE_PROP_NAME, THREADING_MODE_DEFAULT));
     }
 
-    public static boolean doNotSendNaks()
+    /**
+     * How large the term buffer should be for IPC only.
+     *
+     * @param termBufferLength to be used when {@link #IPC_TERM_BUFFER_LENGTH} is not set.
+     * @return the length to be used for the term buffer in bytes
+     */
+    public static int ipcTermBufferLength(final int termBufferLength)
     {
-        return Boolean.parseBoolean(getProperty(DO_NOT_SEND_NAK_PROP_NAME, "false"));
+        return 0 != IPC_TERM_BUFFER_LENGTH ? IPC_TERM_BUFFER_LENGTH : termBufferLength;
+    }
+
+    /**
+     * How far ahead the publisher can get from the sender position for IPC only.
+     *
+     * @param termBufferLength to be used when {@link #IPC_PUBLICATION_TERM_WINDOW_LENGTH} is not set.
+     * @return the length to be used for the publication window.
+     */
+    public static int ipcPublicationTermWindowLength(final int termBufferLength)
+    {
+        return 0 != IPC_PUBLICATION_TERM_WINDOW_LENGTH ? IPC_PUBLICATION_TERM_WINDOW_LENGTH : termBufferLength / 2;
+    }
+
+    /**
+     * Get the supplier of {@link uk.co.real_logic.aeron.driver.media.SendChannelEndpoint}s which can be used for
+     * debugging, monitoring, or modifying the behaviour when sending to the media channel.
+     *
+     * @return the {@link SendChannelEndpointSupplier}.
+     */
+    public static SendChannelEndpointSupplier sendChannelEndpointSupplier()
+    {
+        SendChannelEndpointSupplier supplier = null;
+        try
+        {
+            supplier = (SendChannelEndpointSupplier)Class.forName(SEND_CHANNEL_ENDPOINT_SUPPLIER).newInstance();
+        }
+        catch (final Exception ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
+
+        return supplier;
+    }
+
+    /**
+     * Get the supplier of {@link uk.co.real_logic.aeron.driver.media.ReceiveChannelEndpoint}s which can be used for
+     * debugging, monitoring, or modifying the behaviour when receiving from the media channel.
+     *
+     * @return the {@link SendChannelEndpointSupplier}.
+     */
+    public static ReceiveChannelEndpointSupplier receiveChannelEndpointSupplier()
+    {
+        ReceiveChannelEndpointSupplier supplier = null;
+        try
+        {
+            supplier = (ReceiveChannelEndpointSupplier)Class.forName(RECEIVE_CHANNEL_ENDPOINT_SUPPLIER).newInstance();
+        }
+        catch (final Exception ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
+
+        return supplier;
     }
 }

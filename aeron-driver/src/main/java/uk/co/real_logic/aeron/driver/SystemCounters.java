@@ -35,13 +35,15 @@ public class SystemCounters implements AutoCloseable
     private final AtomicCounter flowControlUnderRuns;
     private final AtomicCounter flowControlOverRuns;
     private final AtomicCounter invalidPackets;
-    private final AtomicCounter driverExceptions;
+    private final AtomicCounter errors;
     private final AtomicCounter dataPacketShortSends;
     private final AtomicCounter setupMessageShortSends;
     private final AtomicCounter statusMessageShortSends;
     private final AtomicCounter nakMessageShortSends;
     private final AtomicCounter clientKeepAlives;
     private final AtomicCounter senderFlowControlLimits;
+    private final AtomicCounter unblockedPublications;
+    private final AtomicCounter unblockedCommands;
 
     public SystemCounters(final CountersManager countersManager)
     {
@@ -60,13 +62,15 @@ public class SystemCounters implements AutoCloseable
         flowControlUnderRuns = countersManager.newCounter("Flow control under runs");
         flowControlOverRuns = countersManager.newCounter("Flow control over runs");
         invalidPackets = countersManager.newCounter("Invalid packets");
-        driverExceptions = countersManager.newCounter("Driver Exceptions");
+        errors = countersManager.newCounter("Errors");
         dataPacketShortSends = countersManager.newCounter("Data Packet short sends");
         setupMessageShortSends = countersManager.newCounter("Setup Message short sends");
         statusMessageShortSends = countersManager.newCounter("Status Message short sends");
         nakMessageShortSends = countersManager.newCounter("NAK Message short sends");
         clientKeepAlives = countersManager.newCounter("Client keep-alives");
         senderFlowControlLimits = countersManager.newCounter("Sender flow control limits applied");
+        unblockedPublications = countersManager.newCounter("Unblocked Publications");
+        unblockedCommands = countersManager.newCounter("Unblocked Control Commands");
     }
 
     public void close()
@@ -86,13 +90,15 @@ public class SystemCounters implements AutoCloseable
         flowControlUnderRuns.close();
         flowControlOverRuns.close();
         invalidPackets.close();
-        driverExceptions.close();
+        errors.close();
         dataPacketShortSends.close();
         setupMessageShortSends.close();
         statusMessageShortSends.close();
         nakMessageShortSends.close();
         clientKeepAlives.close();
         senderFlowControlLimits.close();
+        unblockedPublications.close();
+        unblockedCommands.close();
     }
 
     public AtomicCounter bytesSent()
@@ -170,9 +176,9 @@ public class SystemCounters implements AutoCloseable
         return invalidPackets;
     }
 
-    public AtomicCounter driverExceptions()
+    public AtomicCounter errors()
     {
-        return driverExceptions;
+        return errors;
     }
 
     public AtomicCounter dataPacketShortSends()
@@ -189,6 +195,7 @@ public class SystemCounters implements AutoCloseable
     {
         return statusMessageShortSends;
     }
+
     public AtomicCounter nakMessageShortSends()
     {
         return nakMessageShortSends;
@@ -202,5 +209,15 @@ public class SystemCounters implements AutoCloseable
     public AtomicCounter senderFlowControlLimits()
     {
         return senderFlowControlLimits;
+    }
+
+    public AtomicCounter unblockedPublications()
+    {
+        return unblockedPublications;
+    }
+
+    public AtomicCounter unblockedCommands()
+    {
+        return unblockedCommands;
     }
 }

@@ -15,20 +15,29 @@
  */
 package uk.co.real_logic.aeron.samples;
 
-import org.HdrHistogram.Histogram;
-import uk.co.real_logic.aeron.*;
-import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
-import uk.co.real_logic.aeron.logbuffer.Header;
-import uk.co.real_logic.aeron.driver.MediaDriver;
-import uk.co.real_logic.aeron.driver.ThreadingMode;
-import uk.co.real_logic.agrona.DirectBuffer;
-import uk.co.real_logic.agrona.concurrent.*;
-import uk.co.real_logic.agrona.console.ContinueBarrier;
-
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.HdrHistogram.Histogram;
+
+import uk.co.real_logic.aeron.Aeron;
+import uk.co.real_logic.aeron.FragmentAssembler;
+import uk.co.real_logic.aeron.Image;
+import uk.co.real_logic.aeron.Publication;
+import uk.co.real_logic.aeron.Subscription;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.logbuffer.Header;
+import uk.co.real_logic.agrona.DirectBuffer;
+import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.IdleStrategy;
+import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+import uk.co.real_logic.agrona.console.ContinueBarrier;
 
 public class EmbeddedPingPong
 {
@@ -64,10 +73,10 @@ public class EmbeddedPingPong
 
         try (final MediaDriver ignored = MediaDriver.launch(ctx))
         {
-            final Thread pongThread = startPong(ignored.contextDirName());
+            final Thread pongThread = startPong(ignored.aeronDirectoryName());
             pongThread.start();
 
-            runPing(ignored.contextDirName());
+            runPing(ignored.aeronDirectoryName());
             RUNNING.set(false);
             pongThread.join();
 
@@ -78,8 +87,8 @@ public class EmbeddedPingPong
     private static void runPing(final String embeddedDirName) throws InterruptedException
     {
         final Aeron.Context ctx = new Aeron.Context()
-            .newImageHandler(EmbeddedPingPong::newPongImageHandler);
-        ctx.dirName(embeddedDirName);
+            .availableImageHandler(EmbeddedPingPong::availablePongImageHandler)
+            .aeronDirectoryName(embeddedDirName);
 
         System.out.println("Publishing Ping at " + PING_CHANNEL + " on stream Id " + PING_STREAM_ID);
         System.out.println("Subscribing Pong at " + PONG_CHANNEL + " on stream Id " + PONG_STREAM_ID);
@@ -100,9 +109,10 @@ public class EmbeddedPingPong
 
             for (int i = 0; i < WARMUP_NUMBER_OF_ITERATIONS; i++)
             {
-                sendPingAndReceivePong(dataHandler, pingPublication, pongSubscription, WARMUP_NUMBER_OF_MESSAGES);
+                roundTripMessages(dataHandler, pingPublication, pongSubscription, WARMUP_NUMBER_OF_MESSAGES);
             }
 
+            Thread.sleep(100);
             final ContinueBarrier barrier = new ContinueBarrier("Execute again?");
 
             do
@@ -110,7 +120,7 @@ public class EmbeddedPingPong
                 HISTOGRAM.reset();
                 System.out.println("Pinging " + NUMBER_OF_MESSAGES + " messages");
 
-                sendPingAndReceivePong(dataHandler, pingPublication, pongSubscription, NUMBER_OF_MESSAGES);
+                roundTripMessages(dataHandler, pingPublication, pongSubscription, NUMBER_OF_MESSAGES);
 
                 System.out.println("Histogram of RTT latencies in microseconds.");
                 HISTOGRAM.outputPercentileDistribution(System.out, 1000.0);
@@ -128,8 +138,7 @@ public class EmbeddedPingPong
                 System.out.println("Subscribing Ping at " + PING_CHANNEL + " on stream Id " + PING_STREAM_ID);
                 System.out.println("Publishing Pong at " + PONG_CHANNEL + " on stream Id " + PONG_STREAM_ID);
 
-                final Aeron.Context ctx = new Aeron.Context();
-                ctx.dirName(embeddedDirName);
+                final Aeron.Context ctx = new Aeron.Context().aeronDirectoryName(embeddedDirName);
 
                 try (final Aeron aeron = Aeron.connect(ctx);
                      final Publication pongPublication = aeron.addPublication(PONG_CHANNEL, PONG_STREAM_ID);
@@ -140,8 +149,7 @@ public class EmbeddedPingPong
 
                     while (RUNNING.get())
                     {
-                        final int fragmentsRead = pingSubscription.poll(dataHandler, FRAME_COUNT_LIMIT);
-                        PING_HANDLER_IDLE_STRATEGY.idle(fragmentsRead);
+                        PING_HANDLER_IDLE_STRATEGY.idle(pingSubscription.poll(dataHandler, FRAME_COUNT_LIMIT));
                     }
 
                     System.out.println("Shutting down...");
@@ -150,7 +158,7 @@ public class EmbeddedPingPong
         };
     }
 
-    private static void sendPingAndReceivePong(
+    private static void roundTripMessages(
         final FragmentHandler fragmentHandler,
         final Publication pingPublication,
         final Subscription pongSubscription,
@@ -166,9 +174,10 @@ public class EmbeddedPingPong
             }
             while (pingPublication.offer(ATOMIC_BUFFER, 0, MESSAGE_LENGTH) < 0L);
 
+            idleStrategy.reset();
             while (pongSubscription.poll(fragmentHandler, FRAGMENT_COUNT_LIMIT) <= 0)
             {
-                idleStrategy.idle(0);
+                idleStrategy.idle();
             }
         }
     }
@@ -181,15 +190,10 @@ public class EmbeddedPingPong
         HISTOGRAM.recordValue(rttNs);
     }
 
-    private static void newPongImageHandler(
-        final Image image,
-        final String channel,
-        final int streamId,
-        final int sessionId,
-        final long joiningPosition,
-        final String sourceIdentity)
+    private static void availablePongImageHandler(final Image image)
     {
-        if (PONG_STREAM_ID == streamId && PONG_CHANNEL.equals(channel))
+        final Subscription subscription = image.subscription();
+        if (PONG_STREAM_ID == subscription.streamId() && PONG_CHANNEL.equals(subscription.channel()))
         {
             PONG_IMAGE_LATCH.countDown();
         }
@@ -198,9 +202,16 @@ public class EmbeddedPingPong
     public static void pingHandler(
         final Publication pongPublication, final DirectBuffer buffer, final int offset, final int length)
     {
+        if (pongPublication.offer(buffer, offset, length) < 0L)
+        {
+            return;
+        }
+
+        PING_HANDLER_IDLE_STRATEGY.reset();
+
         while (pongPublication.offer(buffer, offset, length) < 0L)
         {
-            PING_HANDLER_IDLE_STRATEGY.idle(0);
+            PING_HANDLER_IDLE_STRATEGY.idle();
         }
     }
 }

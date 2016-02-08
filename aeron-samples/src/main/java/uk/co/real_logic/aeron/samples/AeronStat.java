@@ -15,6 +15,13 @@
  */
 package uk.co.real_logic.aeron.samples;
 
+import java.io.File;
+import java.io.PrintStream;
+import java.nio.ByteBuffer;
+import java.nio.MappedByteBuffer;
+import java.util.Date;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import uk.co.real_logic.aeron.CncFileDescriptor;
 import uk.co.real_logic.aeron.CommonContext;
 import uk.co.real_logic.agrona.DirectBuffer;
@@ -23,20 +30,17 @@ import uk.co.real_logic.agrona.concurrent.AtomicBuffer;
 import uk.co.real_logic.agrona.concurrent.CountersManager;
 import uk.co.real_logic.agrona.concurrent.SigInt;
 
-import java.io.File;
-import java.nio.MappedByteBuffer;
-import java.util.Date;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 /**
- * Application to print out counters and their labels
- * A command-and-control (cnc) file is maintained by media driver in shared memory.
- * This application reads the the cnc file and prints the counters.
- * Layout of the cnc file is described in {@link CncFileDescriptor}.
+ * Application to print out counters and their labels A command-and-control (cnc) file is maintained by media driver in shared
+ * memory. This application reads the the cnc file and prints the counters. Layout of the cnc file is described in
+ * {@link CncFileDescriptor}.
  */
 public class AeronStat
 {
-    public static void main(final String[] args) throws Exception
+    private final AtomicBuffer valuesBuffer;
+    private final CountersManager countersManager;
+
+    public AeronStat()
     {
         final File cncFile = CommonContext.newDefaultCncFile();
         System.out.println("Command `n Control file " + cncFile);
@@ -51,28 +55,48 @@ public class AeronStat
         }
 
         final AtomicBuffer labelsBuffer = CncFileDescriptor.createCounterLabelsBuffer(cncByteBuffer, metaDataBuffer);
-        final AtomicBuffer valuesBuffer = CncFileDescriptor.createCounterValuesBuffer(cncByteBuffer, metaDataBuffer);
-        final CountersManager countersManager = new CountersManager(labelsBuffer, valuesBuffer);
+        valuesBuffer = CncFileDescriptor.createCounterValuesBuffer(cncByteBuffer, metaDataBuffer);
+        countersManager = new CountersManager(labelsBuffer, valuesBuffer);
+    }
 
-        // Setup the SIGINT handler for graceful shutdown
+    public void output(final PrintStream out)
+    {
+        out.format("%1$tH:%1$tM:%1$tS - Aeron Stat\n", new Date());
+        out.println("=========================");
+
+        this.countersManager.forEach(
+            (id, label) ->
+            {
+                final int offset = CountersManager.counterOffset(id);
+                final long value = valuesBuffer.getLongVolatile(offset);
+                out.format("%3d: %,20d - %s\n", id, value, label);
+            });
+    }
+
+    public void encode(final ByteBuffer buffer)
+    {
+        buffer.putLong(System.currentTimeMillis());
+
+        countersManager.forEach(
+            (id, label) ->
+            {
+                buffer.putInt(id);
+                buffer.putInt(label.length());
+                buffer.put(label.getBytes());
+                buffer.putLong(valuesBuffer.getLongVolatile(CountersManager.counterOffset(id)));
+            });
+    }
+
+    public static void main(final String[] args) throws Exception
+    {
+        final AeronStat aeronStat = new AeronStat();
         final AtomicBoolean running = new AtomicBoolean(true);
         SigInt.register(() -> running.set(false));
 
         while (running.get())
         {
             System.out.print("\033[H\033[2J");
-            System.out.format("%1$tH:%1$tM:%1$tS - Aeron Stat\n", new Date());
-            System.out.println("=========================");
-
-            countersManager.forEach(
-                (id, label) ->
-                {
-                    final int offset = CountersManager.counterOffset(id);
-                    final long value = valuesBuffer.getLongVolatile(offset);
-
-                    System.out.format("%3d: %,20d - %s\n", id, value, label);
-                });
-
+            aeronStat.output(System.out);
             Thread.sleep(1000);
         }
     }

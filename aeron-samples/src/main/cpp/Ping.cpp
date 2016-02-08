@@ -137,6 +137,8 @@ int main(int argc, char **argv)
 
         aeron::Context context;
         std::atomic<int> countDown(1);
+        std::int64_t subscriptionId;
+        std::int64_t publicationId;
 
         if (settings.dirPrefix != "")
         {
@@ -155,34 +157,28 @@ int main(int argc, char **argv)
                 std::cout << "Publication: " << channel << " " << correlationId << ":" << streamId << ":" << sessionId << std::endl;
             });
 
-        context.newImageHandler([&](
-            Image& image,
-            const std::string &channel,
-            std::int32_t streamId,
-            std::int32_t sessionId,
-            std::int64_t joiningPosition,
-            const std::string &sourceIdentity)
-        {
-            std::cout << "New image on " << channel << " streamId=" << streamId << " sessionId=" << sessionId;
-            std::cout << " at position=" << joiningPosition << " from " << sourceIdentity << std::endl;
-
-            if (channel == settings.pongChannel && streamId == settings.pongStreamId)
+        context.availableImageHandler(
+            [&](Image &image)
             {
-                countDown--;
-            }
-        });
+                std::cout << "Available image correlationId=" << image.correlationId() << " sessionId=" << image.sessionId();
+                std::cout << " at position=" << image.position() << " from " << image.sourceIdentity() << std::endl;
 
-        context.inactiveImageHandler(
-            [](Image& image, const std::string &channel, std::int32_t streamId, std::int32_t sessionId, std::int64_t position)
+                if (image.subscriptionRegistrationId() == subscriptionId)
+                {
+                    countDown--;
+                }
+            });
+
+        context.unavailableImageHandler([](Image &image)
             {
-                std::cout << "Inactive image on " << channel << "streamId=" << streamId << " sessionId=" << sessionId;
-                std::cout << " at position=" << position << std::endl;
+                std::cout << "Unavailable image on correlationId=" << image.correlationId() << " sessionId=" << image.sessionId();
+                std::cout << " at position=" << image.position() << " from " << image.sourceIdentity() << std::endl;
             });
 
         Aeron aeron(context);
 
-        std::int64_t subscriptionId = aeron.addSubscription(settings.pongChannel, settings.pongStreamId);
-        std::int64_t publicationId = aeron.addPublication(settings.pingChannel, settings.pingStreamId);
+        subscriptionId = aeron.addSubscription(settings.pongChannel, settings.pongStreamId);
+        publicationId = aeron.addPublication(settings.pingChannel, settings.pingStreamId);
 
         std::shared_ptr<Subscription> pongSubscription = aeron.findSubscription(subscriptionId);
         while (!pongSubscription)
@@ -204,7 +200,7 @@ int main(int argc, char **argv)
         }
 
         hdr_histogram* histogram;
-        hdr_init(1, 10 * 1000 * 1000 * 1000, 3, &histogram);
+        hdr_init(1, 10 * 1000 * 1000 * 1000L, 3, &histogram);
 
         do
         {

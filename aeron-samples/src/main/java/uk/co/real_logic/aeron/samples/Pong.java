@@ -15,6 +15,8 @@
  */
 package uk.co.real_logic.aeron.samples;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import uk.co.real_logic.aeron.Aeron;
 import uk.co.real_logic.aeron.FragmentAssembler;
 import uk.co.real_logic.aeron.Publication;
@@ -22,12 +24,9 @@ import uk.co.real_logic.aeron.Subscription;
 import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.agrona.CloseHelper;
 import uk.co.real_logic.agrona.DirectBuffer;
-import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.IdleStrategy;
 import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.SigInt;
-
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Pong component of Ping-Pong.
@@ -43,7 +42,7 @@ public class Pong
     private static final int FRAME_COUNT_LIMIT = SampleConfiguration.FRAGMENT_COUNT_LIMIT;
     private static final boolean EMBEDDED_MEDIA_DRIVER = SampleConfiguration.EMBEDDED_MEDIA_DRIVER;
 
-    private static final BusySpinIdleStrategy PING_HANDLER_IDLE_STRATEGY = new BusySpinIdleStrategy();
+    private static final IdleStrategy PING_HANDLER_IDLE_STRATEGY = new NoOpIdleStrategy();
 
     public static void main(final String[] args) throws Exception
     {
@@ -52,7 +51,7 @@ public class Pong
         final Aeron.Context ctx = new Aeron.Context();
         if (EMBEDDED_MEDIA_DRIVER)
         {
-            ctx.dirName(driver.contextDirName());
+            ctx.aeronDirectoryName(driver.aeronDirectoryName());
         }
 
         final IdleStrategy idleStrategy = new NoOpIdleStrategy();
@@ -63,7 +62,6 @@ public class Pong
         final AtomicBoolean running = new AtomicBoolean(true);
         SigInt.register(() -> running.set(false));
 
-
         try (final Aeron aeron = Aeron.connect(ctx);
              final Publication pongPublication = aeron.addPublication(PONG_CHANNEL, PONG_STREAM_ID);
              final Subscription pingSubscription = aeron.addSubscription(PING_CHANNEL, PING_STREAM_ID))
@@ -73,8 +71,7 @@ public class Pong
 
             while (running.get())
             {
-                final int fragmentsRead = pingSubscription.poll(dataHandler, FRAME_COUNT_LIMIT);
-                idleStrategy.idle(fragmentsRead);
+                idleStrategy.idle(pingSubscription.poll(dataHandler, FRAME_COUNT_LIMIT));
             }
 
             System.out.println("Shutting down...");
@@ -83,12 +80,19 @@ public class Pong
         CloseHelper.quietClose(driver);
     }
 
-    private static void pingHandler(
+    public static void pingHandler(
         final Publication pongPublication, final DirectBuffer buffer, final int offset, final int length)
     {
+        if (pongPublication.offer(buffer, offset, length) > 0L)
+        {
+            return;
+        }
+
+        PING_HANDLER_IDLE_STRATEGY.reset();
+
         while (pongPublication.offer(buffer, offset, length) < 0L)
         {
-            PING_HANDLER_IDLE_STRATEGY.idle(0);
+            PING_HANDLER_IDLE_STRATEGY.idle();
         }
     }
 }

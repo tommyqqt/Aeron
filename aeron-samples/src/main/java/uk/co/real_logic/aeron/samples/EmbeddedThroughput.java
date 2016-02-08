@@ -15,18 +15,7 @@
  */
 package uk.co.real_logic.aeron.samples;
 
-import uk.co.real_logic.aeron.Aeron;
-import uk.co.real_logic.aeron.Publication;
-import uk.co.real_logic.aeron.Subscription;
-import uk.co.real_logic.aeron.driver.MediaDriver;
-import uk.co.real_logic.aeron.driver.RateReporter;
-import uk.co.real_logic.aeron.driver.ThreadingMode;
-import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
-import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
-import uk.co.real_logic.agrona.concurrent.IdleStrategy;
-import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
-import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.agrona.console.ContinueBarrier;
+import static uk.co.real_logic.aeron.samples.SamplesUtil.rateReporterHandler;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
@@ -34,7 +23,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static uk.co.real_logic.aeron.samples.SamplesUtil.rateReporterHandler;
+import uk.co.real_logic.aeron.Aeron;
+import uk.co.real_logic.aeron.Publication;
+import uk.co.real_logic.aeron.Subscription;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.RateReporter;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+import uk.co.real_logic.agrona.console.ContinueBarrier;
 
 public class EmbeddedThroughput
 {
@@ -46,22 +43,18 @@ public class EmbeddedThroughput
     private static final int FRAGMENT_COUNT_LIMIT = SampleConfiguration.FRAGMENT_COUNT_LIMIT;
 
     private static final UnsafeBuffer ATOMIC_BUFFER = new UnsafeBuffer(ByteBuffer.allocateDirect(MESSAGE_LENGTH));
-    private static final IdleStrategy OFFER_IDLE_STRATEGY = new BusySpinIdleStrategy();
+    private static final BusySpinIdleStrategy OFFER_IDLE_STRATEGY = new BusySpinIdleStrategy();
 
     private static volatile boolean printingActive = true;
 
     public static void main(final String[] args) throws Exception
     {
-        if (1 == args.length)
+        if (1 != args.length)
         {
-            MediaDriver.loadPropertiesFile(args[0]);
+            throw new IllegalArgumentException("must specify properties file to use");
         }
 
-        final MediaDriver.Context ctx = new MediaDriver.Context()
-            .threadingMode(ThreadingMode.DEDICATED)
-            .conductorIdleStrategy(new NoOpIdleStrategy())
-            .receiverIdleStrategy(new NoOpIdleStrategy())
-            .senderIdleStrategy(new NoOpIdleStrategy());
+        MediaDriver.loadPropertiesFile(args[0]);
 
         final RateReporter reporter = new RateReporter(TimeUnit.SECONDS.toNanos(1), EmbeddedThroughput::printRate);
         final FragmentHandler rateReporterHandler = rateReporterHandler(reporter);
@@ -71,7 +64,7 @@ public class EmbeddedThroughput
 
         final AtomicBoolean running = new AtomicBoolean(true);
 
-        try (final MediaDriver ignore = MediaDriver.launch(ctx);
+        try (final MediaDriver ignore = MediaDriver.launch();
              final Aeron aeron = Aeron.connect(context);
              final Publication publication = aeron.addPublication(CHANNEL, STREAM_ID);
              final Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID))
@@ -91,15 +84,15 @@ public class EmbeddedThroughput
                 printingActive = true;
 
                 long backPressureCount = 0;
-
                 for (long i = 0; i < NUMBER_OF_MESSAGES; i++)
                 {
                     ATOMIC_BUFFER.putLong(0, i);
 
+                    OFFER_IDLE_STRATEGY.reset();
                     while (publication.offer(ATOMIC_BUFFER, 0, ATOMIC_BUFFER.capacity()) < 0)
                     {
+                        OFFER_IDLE_STRATEGY.idle();
                         backPressureCount++;
-                        OFFER_IDLE_STRATEGY.idle(0);
                     }
                 }
 

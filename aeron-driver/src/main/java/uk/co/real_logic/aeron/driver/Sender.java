@@ -16,8 +16,8 @@
 package uk.co.real_logic.aeron.driver;
 
 import uk.co.real_logic.aeron.driver.cmd.SenderCmd;
-import uk.co.real_logic.aeron.driver.media.SendChannelEndpoint;
-import uk.co.real_logic.aeron.driver.media.TransportPoller;
+import uk.co.real_logic.aeron.driver.media.*;
+import uk.co.real_logic.agrona.collections.ArrayUtil;
 import uk.co.real_logic.agrona.concurrent.Agent;
 import uk.co.real_logic.agrona.concurrent.AtomicCounter;
 import uk.co.real_logic.agrona.concurrent.NanoClock;
@@ -26,24 +26,24 @@ import uk.co.real_logic.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import java.util.function.Consumer;
 
 /**
- * Agent that iterates over publications for sending them to registered subscribers.
+ * Agent that iterates over networkPublications for sending them to registered subscribers.
  */
 public class Sender implements Agent, Consumer<SenderCmd>
 {
     private static final NetworkPublication[] EMPTY_PUBLICATIONS = new NetworkPublication[0];
 
-    private final TransportPoller transportPoller;
+    private final ControlTransportPoller controlTransportPoller;
     private final OneToOneConcurrentArrayQueue<SenderCmd> commandQueue;
     private final DriverConductorProxy conductorProxy;
     private final AtomicCounter totalBytesSent;
     private final NanoClock nanoClock;
 
-    private NetworkPublication[] publications = EMPTY_PUBLICATIONS;
+    private NetworkPublication[] networkPublications = EMPTY_PUBLICATIONS;
     private int roundRobinIndex = 0;
 
     public Sender(final MediaDriver.Context ctx)
     {
-        this.transportPoller = ctx.senderNioSelector();
+        this.controlTransportPoller = ctx.senderTransportPoller();
         this.commandQueue = ctx.senderCommandQueue();
         this.conductorProxy = ctx.fromSenderDriverConductorProxy();
         this.totalBytesSent = ctx.systemCounters().bytesSent();
@@ -55,7 +55,7 @@ public class Sender implements Agent, Consumer<SenderCmd>
         final long now = nanoClock.nanoTime();
         final int workCount = commandQueue.drain(this);
         final int bytesSent = doSend(now);
-        final int bytesReceived = transportPoller.pollTransports();
+        final int bytesReceived = controlTransportPoller.pollTransports();
 
         return workCount + bytesSent + bytesReceived;
     }
@@ -68,45 +68,26 @@ public class Sender implements Agent, Consumer<SenderCmd>
     public void onRegisterSendChannelEndpoint(final SendChannelEndpoint channelEndpoint)
     {
         channelEndpoint.openChannel();
-        channelEndpoint.registerForRead(transportPoller);
-        transportPoller.selectNowWithoutProcessing();
+        channelEndpoint.registerForRead(controlTransportPoller);
+        controlTransportPoller.selectNowWithoutProcessing();
     }
 
     public void onCloseSendChannelEndpoint(final SendChannelEndpoint channelEndpoint)
     {
         channelEndpoint.close();
-        transportPoller.selectNowWithoutProcessing();
+        controlTransportPoller.selectNowWithoutProcessing();
     }
 
-    public void onNewPublication(final NetworkPublication publication)
+    public void onNewNetworkPublication(final NetworkPublication publication)
     {
-        final NetworkPublication[] oldPublications = publications;
-        final int length = oldPublications.length;
-        final NetworkPublication[] newPublications = new NetworkPublication[length + 1];
-
-        System.arraycopy(oldPublications, 0, newPublications, 0, length);
-        newPublications[length] = publication;
-
-        publications = newPublications;
-
-        publication.sendChannelEndpoint().addToDispatcher(publication);
+        networkPublications = ArrayUtil.add(networkPublications, publication);
+        publication.sendChannelEndpoint().registerForSend(publication);
     }
 
-    public void onRemovePublication(final NetworkPublication publication)
+    public void onRemoveNetworkPublication(final NetworkPublication publication)
     {
-        final NetworkPublication[] oldPublications = publications;
-        final int length = oldPublications.length;
-        final NetworkPublication[] newPublications = new NetworkPublication[length - 1];
-        for (int i = 0, j = 0; i < length; i++)
-        {
-            if (oldPublications[i] != publication)
-            {
-                newPublications[j++] = oldPublications[i];
-            }
-        }
-
-        publications = newPublications;
-        publication.sendChannelEndpoint().removeFromDispatcher(publication);
+        networkPublications = ArrayUtil.remove(networkPublications, publication);
+        publication.sendChannelEndpoint().unregisterForSend(publication);
         conductorProxy.closeResource(publication);
     }
 
@@ -118,29 +99,23 @@ public class Sender implements Agent, Consumer<SenderCmd>
     private int doSend(final long now)
     {
         int bytesSent = 0;
-        final NetworkPublication[] publications = this.publications;
+        final NetworkPublication[] publications = this.networkPublications;
         final int length = publications.length;
 
-        if (length > 0)
+        int startingIndex = roundRobinIndex++;
+        if (startingIndex >= length)
         {
-            int startingIndex = roundRobinIndex++;
-            if (startingIndex >= length)
-            {
-                roundRobinIndex = startingIndex = 0;
-            }
+            roundRobinIndex = startingIndex = 0;
+        }
 
-            int i = startingIndex;
+        for (int i = startingIndex; i < length; i++)
+        {
+            bytesSent += publications[i].send(now);
+        }
 
-            do
-            {
-                bytesSent += publications[i].send(now);
-
-                if (++i == length)
-                {
-                    i = 0;
-                }
-            }
-            while (i != startingIndex);
+        for (int i = 0; i < startingIndex; i++)
+        {
+            bytesSent += publications[i].send(now);
         }
 
         totalBytesSent.addOrdered(bytesSent);

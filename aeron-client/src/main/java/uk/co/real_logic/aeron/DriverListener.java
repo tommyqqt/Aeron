@@ -30,23 +30,15 @@ interface DriverListener
         String logFileName,
         long correlationId);
 
-    void onNewImage(
+    void onAvailableImage(
         int streamId,
         int sessionId,
-        long initialPosition,
         Long2LongHashMap subscriberPositionMap,
         String logFileName,
         String sourceIdentity,
         long correlationId);
 
-    void onInactiveImage(
-        int streamId,
-        int sessionId,
-        long position,
-        long correlationId);
+    void onUnavailableImage(int streamId, long correlationId);
 
-    void onError(
-        ErrorCode errorCode,
-        String message,
-        long correlationId);
+    void onError(ErrorCode errorCode, String message, long correlationId);
 }

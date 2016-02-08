@@ -17,11 +17,11 @@ package uk.co.real_logic.aeron;
 
 import org.junit.After;
 import org.junit.Test;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
 import uk.co.real_logic.aeron.logbuffer.Header;
 import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
-import uk.co.real_logic.aeron.driver.MediaDriver;
-import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.IoUtil;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
@@ -40,16 +40,14 @@ import static org.mockito.Mockito.*;
  */
 public class MultiDriverTest
 {
-    public static final String MULTICAST_URI = "udp://localhost@224.20.30.39:54326";
+    public static final String MULTICAST_URI = "aeron:udp?group=224.20.30.39:54326|interface=localhost";
 
     private static final int STREAM_ID = 1;
-    private static final int SESSION_ID = 2;
     private static final ThreadingMode THREADING_MODE = ThreadingMode.SHARED;
 
-    private static final int TERM_BUFFER_SIZE = 64 * 1024;
+    private static final int TERM_BUFFER_LENGTH = 64 * 1024;
     private static final int NUM_MESSAGES_PER_TERM = 64;
-    private static final int MESSAGE_LENGTH =
-        (TERM_BUFFER_SIZE / NUM_MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
+    private static final int MESSAGE_LENGTH = (TERM_BUFFER_LENGTH / NUM_MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
     private static final String ROOT_DIR =
         IoUtil.tmpDirName() + "aeron-system-tests-" + UUID.randomUUID().toString() + File.separator;
 
@@ -77,17 +75,17 @@ public class MultiDriverTest
 
         buffer.putInt(0, 1);
 
-        driverAContext.termBufferLength(TERM_BUFFER_SIZE);
-        driverAContext.dirName(baseDirA);
-        driverAContext.threadingMode(THREADING_MODE);
+        driverAContext.publicationTermBufferLength(TERM_BUFFER_LENGTH)
+            .aeronDirectoryName(baseDirA)
+            .threadingMode(THREADING_MODE);
 
-        aeronAContext.dirName(driverAContext.dirName());
+        aeronAContext.aeronDirectoryName(driverAContext.aeronDirectoryName());
 
-        driverBContext.termBufferLength(TERM_BUFFER_SIZE);
-        driverBContext.dirName(baseDirB);
-        driverBContext.threadingMode(THREADING_MODE);
+        driverBContext.publicationTermBufferLength(TERM_BUFFER_LENGTH)
+            .aeronDirectoryName(baseDirB)
+            .threadingMode(THREADING_MODE);
 
-        aeronBContext.dirName(driverBContext.dirName());
+        aeronBContext.aeronDirectoryName(driverBContext.aeronDirectoryName());
 
         driverA = MediaDriver.launch(driverAContext);
         driverB = MediaDriver.launch(driverBContext);
@@ -115,7 +113,7 @@ public class MultiDriverTest
     {
         launch();
 
-        publication = clientA.addPublication(MULTICAST_URI, STREAM_ID, SESSION_ID);
+        publication = clientA.addPublication(MULTICAST_URI, STREAM_ID);
         subscriptionA = clientA.addSubscription(MULTICAST_URI, STREAM_ID);
         subscriptionB = clientB.addSubscription(MULTICAST_URI, STREAM_ID);
 
@@ -129,11 +127,11 @@ public class MultiDriverTest
         final int numMessagesToSendPostJoin = NUM_MESSAGES_PER_TERM;
         final CountDownLatch newImageLatch = new CountDownLatch(1);
 
-        aeronBContext.newImageHandler((image, channel, streamId, sessionId, position, info) -> newImageLatch.countDown());
+        aeronBContext.availableImageHandler((image) -> newImageLatch.countDown());
 
         launch();
 
-        publication = clientA.addPublication(MULTICAST_URI, STREAM_ID, SESSION_ID);
+        publication = clientA.addPublication(MULTICAST_URI, STREAM_ID);
         subscriptionA = clientA.addSubscription(MULTICAST_URI, STREAM_ID);
 
         for (int i = 0; i < numMessagesToSendPreJoin; i++)
@@ -154,6 +152,70 @@ public class MultiDriverTest
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(500));
         }
+
+        subscriptionB = clientB.addSubscription(MULTICAST_URI, STREAM_ID);
+
+        // wait until new subscriber gets new image indication
+        newImageLatch.await();
+
+        for (int i = 0; i < numMessagesToSendPostJoin; i++)
+        {
+            while (publication.offer(buffer, 0, buffer.capacity()) < 0L)
+            {
+                Thread.yield();
+            }
+
+            final int fragmentsRead[] = new int[1];
+            SystemTestHelper.executeUntil(
+                () -> fragmentsRead[0] > 0,
+                (j) ->
+                {
+                    fragmentsRead[0] += subscriptionA.poll(fragmentHandlerA, 10);
+                    Thread.yield();
+                },
+                Integer.MAX_VALUE,
+                TimeUnit.MILLISECONDS.toNanos(500));
+
+            fragmentsRead[0] = 0;
+            SystemTestHelper.executeUntil(
+                () -> fragmentsRead[0] > 0,
+                (j) ->
+                {
+                    fragmentsRead[0] += subscriptionB.poll(fragmentHandlerB, 10);
+                    Thread.yield();
+                },
+                Integer.MAX_VALUE,
+                TimeUnit.MILLISECONDS.toNanos(500));
+        }
+
+        verify(fragmentHandlerA, times(numMessagesToSendPreJoin + numMessagesToSendPostJoin)).onFragment(
+            any(UnsafeBuffer.class),
+            anyInt(),
+            eq(MESSAGE_LENGTH),
+            any(Header.class));
+
+        verify(fragmentHandlerB, times(numMessagesToSendPostJoin)).onFragment(
+            any(UnsafeBuffer.class),
+            anyInt(),
+            eq(MESSAGE_LENGTH),
+            any(Header.class));
+    }
+
+    @Test(timeout = 10000)
+    public void shouldJoinExistingIdleStreamWithLockStepSendingReceiving() throws Exception
+    {
+        final int numMessagesToSendPreJoin = 0;
+        final int numMessagesToSendPostJoin = NUM_MESSAGES_PER_TERM;
+        final CountDownLatch newImageLatch = new CountDownLatch(1);
+
+        aeronBContext.availableImageHandler((image) -> newImageLatch.countDown());
+
+        launch();
+
+        publication = clientA.addPublication(MULTICAST_URI, STREAM_ID);
+        subscriptionA = clientA.addSubscription(MULTICAST_URI, STREAM_ID);
+
+        Thread.sleep(200);  // intentioanlyl wait so that Publication and Subscription have time to do SETUP
 
         subscriptionB = clientB.addSubscription(MULTICAST_URI, STREAM_ID);
 

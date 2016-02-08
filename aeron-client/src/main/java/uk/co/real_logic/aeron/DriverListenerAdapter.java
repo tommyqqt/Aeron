@@ -44,7 +44,7 @@ class DriverListenerAdapter implements MessageHandler
     private long lastReceivedCorrelationId;
     private String expectedChannel;
 
-    public DriverListenerAdapter(final CopyBroadcastReceiver broadcastReceiver, final DriverListener listener)
+    DriverListenerAdapter(final CopyBroadcastReceiver broadcastReceiver, final DriverListener listener)
     {
         this.broadcastReceiver = broadcastReceiver;
         this.listener = listener;
@@ -73,7 +73,6 @@ class DriverListenerAdapter implements MessageHandler
                 publicationReady.wrap(buffer, index);
 
                 final long correlationId = publicationReady.correlationId();
-
                 if (correlationId == activeCorrelationId)
                 {
                     listener.onNewPublication(
@@ -89,10 +88,11 @@ class DriverListenerAdapter implements MessageHandler
                 break;
             }
 
-            case ON_IMAGE_READY:
+            case ON_AVAILABLE_IMAGE:
             {
                 imageReady.wrap(buffer, index);
 
+                subscriberPositionMap.clear();
                 for (int i = 0, max = imageReady.subscriberPositionCount(); i < max; i++)
                 {
                     final long registrationId = imageReady.positionIndicatorRegistrationId(i);
@@ -101,16 +101,13 @@ class DriverListenerAdapter implements MessageHandler
                     subscriberPositionMap.put(registrationId, positionId);
                 }
 
-                listener.onNewImage(
+                listener.onAvailableImage(
                     imageReady.streamId(),
                     imageReady.sessionId(),
-                    imageReady.joiningPosition(),
                     subscriberPositionMap,
                     imageReady.logFileName(),
                     imageReady.sourceIdentity(),
                     imageReady.correlationId());
-
-                subscriberPositionMap.clear();
                 break;
             }
 
@@ -126,23 +123,19 @@ class DriverListenerAdapter implements MessageHandler
                 break;
             }
 
-            case ON_INACTIVE_IMAGE:
+            case ON_UNAVAILABLE_IMAGE:
             {
                 imageMessage.wrap(buffer, index);
 
-                listener.onInactiveImage(
-                    imageMessage.streamId(),
-                    imageMessage.sessionId(),
-                    imageMessage.position(),
-                    imageMessage.correlationId());
+                listener.onUnavailableImage(imageMessage.streamId(), imageMessage.correlationId());
                 break;
             }
 
             case ON_ERROR:
             {
                 errorResponse.wrap(buffer, index);
-                final long correlationId = errorResponse.offendingCommandCorrelationId();
 
+                final long correlationId = errorResponse.offendingCommandCorrelationId();
                 if (correlationId == activeCorrelationId)
                 {
                     listener.onError(errorResponse.errorCode(), errorResponse.errorMessage(), correlationId);

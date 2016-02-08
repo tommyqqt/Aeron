@@ -21,6 +21,7 @@ import uk.co.real_logic.aeron.command.ControlProtocolEvents;
 import uk.co.real_logic.aeron.command.CorrelatedMessageFlyweight;
 import uk.co.real_logic.aeron.command.ErrorResponseFlyweight;
 import uk.co.real_logic.aeron.command.PublicationBuffersReadyFlyweight;
+import uk.co.real_logic.aeron.exceptions.ConductorServiceTimeoutException;
 import uk.co.real_logic.aeron.exceptions.DriverTimeoutException;
 import uk.co.real_logic.aeron.exceptions.RegistrationException;
 import uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor;
@@ -32,6 +33,7 @@ import uk.co.real_logic.agrona.concurrent.*;
 import uk.co.real_logic.agrona.concurrent.broadcast.CopyBroadcastReceiver;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -63,7 +65,10 @@ public class ClientConductorTest
     private static final long CLOSE_CORRELATION_ID = 2001;
     private static final long UNKNOWN_CORRELATION_ID = 3000;
 
-    private static final int AWAIT_TIMEOUT = 100;
+    private static final long KEEP_ALIVE_INTERVAL = TimeUnit.MILLISECONDS.toNanos(500);
+    private static final long AWAIT_TIMEOUT = 100;
+    private static final long INTER_SERVICE_TIMEOUT_MS = 100;
+    private static final long PUBLICATION_CONNECTION_TIMEOUT_MS = 5000;
 
     private static final String SOURCE_INFO = "127.0.0.1:40789";
 
@@ -81,22 +86,23 @@ public class ClientConductorTest
 
     private final EpochClock epochClock = new SystemEpochClock();
     private final NanoClock nanoClock = new SystemNanoClock();
-    private final ErrorHandler mockClientErrorHandler = Throwable::printStackTrace;
+    private final ErrorHandler mockClientErrorHandler = spy(new PrintError());
 
     private DriverProxy driverProxy;
     private ClientConductor conductor;
-    private NewImageHandler mockNewImageHandler = mock(NewImageHandler.class);
-    private InactiveImageHandler mockInactiveImageHandler = mock(InactiveImageHandler.class);
+    private AvailableImageHandler mockAvailableImageHandler = mock(AvailableImageHandler.class);
+    private UnavailableImageHandler mockUnavailableImageHandler = mock(UnavailableImageHandler.class);
     private LogBuffersFactory logBuffersFactory = mock(LogBuffersFactory.class);
     private Long2LongHashMap subscriberPositionMap = new Long2LongHashMap(-1L);
+    private boolean suppressPrintError = false;
 
     @Before
     public void setUp() throws Exception
     {
         driverProxy = mock(DriverProxy.class);
 
-        when(driverProxy.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1)).thenReturn(CORRELATION_ID);
-        when(driverProxy.addPublication(CHANNEL, STREAM_ID_2, SESSION_ID_2)).thenReturn(CORRELATION_ID_2);
+        when(driverProxy.addPublication(CHANNEL, STREAM_ID_1)).thenReturn(CORRELATION_ID);
+        when(driverProxy.addPublication(CHANNEL, STREAM_ID_2)).thenReturn(CORRELATION_ID_2);
         when(driverProxy.removePublication(CORRELATION_ID)).thenReturn(CLOSE_CORRELATION_ID);
         when(driverProxy.addSubscription(anyString(), anyInt())).thenReturn(CORRELATION_ID);
         when(driverProxy.removeSubscription(CORRELATION_ID)).thenReturn(CLOSE_CORRELATION_ID);
@@ -109,9 +115,12 @@ public class ClientConductorTest
             counterValuesBuffer,
             driverProxy,
             mockClientErrorHandler,
-            mockNewImageHandler,
-            mockInactiveImageHandler,
-            AWAIT_TIMEOUT);
+            mockAvailableImageHandler,
+            mockUnavailableImageHandler,
+            KEEP_ALIVE_INTERVAL,
+            AWAIT_TIMEOUT,
+            TimeUnit.MILLISECONDS.toNanos(INTER_SERVICE_TIMEOUT_MS),
+            TimeUnit.MILLISECONDS.toMillis(PUBLICATION_CONNECTION_TIMEOUT_MS));
 
         publicationReady.wrap(publicationReadyBuffer, 0);
         correlatedMessage.wrap(correlatedMessageBuffer, 0);
@@ -148,8 +157,8 @@ public class ClientConductorTest
         final MutableDirectBuffer header1 = DataHeaderFlyweight.createDefaultHeader(SESSION_ID_1, STREAM_ID_1, 0);
         final MutableDirectBuffer header2 = DataHeaderFlyweight.createDefaultHeader(SESSION_ID_2, STREAM_ID_2, 0);
 
-        LogBufferDescriptor.storeDefaultFrameHeaders(atomicBuffersSession1[LOG_META_DATA_SECTION_INDEX], header1);
-        LogBufferDescriptor.storeDefaultFrameHeaders(atomicBuffersSession2[LOG_META_DATA_SECTION_INDEX], header2);
+        LogBufferDescriptor.storeDefaultFrameHeader(atomicBuffersSession1[LOG_META_DATA_SECTION_INDEX], header1);
+        LogBufferDescriptor.storeDefaultFrameHeader(atomicBuffersSession2[LOG_META_DATA_SECTION_INDEX], header2);
 
         final LogBuffers logBuffersSession1 = mock(LogBuffers.class);
         final LogBuffers logBuffersSession2 = mock(LogBuffers.class);
@@ -173,9 +182,9 @@ public class ClientConductorTest
             publicationReadyBuffer,
             (buffer) -> publicationReady.length());
 
-        conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        conductor.addPublication(CHANNEL, STREAM_ID_1);
 
-        verify(driverProxy).addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        verify(driverProxy).addPublication(CHANNEL, STREAM_ID_1);
     }
 
     @Test
@@ -186,7 +195,7 @@ public class ClientConductorTest
             publicationReadyBuffer,
             (buffer) -> publicationReady.length());
 
-        conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         verify(logBuffersFactory).map(SESSION_ID_1 + "-log");
     }
@@ -194,7 +203,7 @@ public class ClientConductorTest
     @Test(expected = DriverTimeoutException.class)
     public void addPublicationShouldTimeoutWithoutReadyMessage()
     {
-        conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        conductor.addPublication(CHANNEL, STREAM_ID_1);
     }
 
     @Test
@@ -205,8 +214,8 @@ public class ClientConductorTest
             publicationReadyBuffer,
             (buffer) -> publicationReady.length());
 
-        final Publication firstPublication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
-        final Publication secondPublication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication firstPublication = conductor.addPublication(CHANNEL, STREAM_ID_1);
+        final Publication secondPublication = conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         assertThat(firstPublication, sameInstance(secondPublication));
     }
@@ -217,7 +226,7 @@ public class ClientConductorTest
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY, publicationReadyBuffer, (buffer) -> publicationReady.length());
 
-        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_OPERATION_SUCCESS, correlatedMessageBuffer, (buffer) -> CorrelatedMessageFlyweight.LENGTH);
@@ -233,7 +242,7 @@ public class ClientConductorTest
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY, publicationReadyBuffer, (buffer) -> publicationReady.length());
 
-        final Publication firstPublication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication firstPublication = conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_OPERATION_SUCCESS, correlatedMessageBuffer, (buffer) -> CorrelatedMessageFlyweight.LENGTH);
@@ -243,7 +252,7 @@ public class ClientConductorTest
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY, publicationReadyBuffer, (buffer) -> publicationReady.length());
 
-        final Publication secondPublication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication secondPublication = conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         assertThat(firstPublication, not(sameInstance(secondPublication)));
     }
@@ -254,7 +263,7 @@ public class ClientConductorTest
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY, publicationReadyBuffer, (buffer) -> publicationReady.length());
 
-        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_ERROR,
@@ -284,7 +293,7 @@ public class ClientConductorTest
                 return errorResponse.length();
             });
 
-        conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        conductor.addPublication(CHANNEL, STREAM_ID_1);
     }
 
     @Test
@@ -293,8 +302,8 @@ public class ClientConductorTest
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY, publicationReadyBuffer, (buffer) -> publicationReady.length());
 
-        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
-        conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1);
+        conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         publication.close();
 
@@ -314,7 +323,7 @@ public class ClientConductorTest
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY, publicationReadyBuffer, (buffer) -> publicationReady.length());
 
-        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1);
 
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_PUBLICATION_READY,
@@ -328,7 +337,7 @@ public class ClientConductorTest
                 return publicationReady.length();
             });
 
-        conductor.addPublication(CHANNEL, STREAM_ID_2, SESSION_ID_2);
+        conductor.addPublication(CHANNEL, STREAM_ID_2);
 
         whenReceiveBroadcastOnMessage(
             ControlProtocolEvents.ON_OPERATION_SUCCESS, correlatedMessageBuffer, (buffer) -> CorrelatedMessageFlyweight.LENGTH);
@@ -360,7 +369,7 @@ public class ClientConductorTest
                 return publicationReady.length();
             });
 
-        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1, SESSION_ID_1);
+        final Publication publication = conductor.addPublication(CHANNEL, STREAM_ID_1);
         conductor.doWork();
 
         verify(logBuffersFactory, times(1)).map(anyString());
@@ -453,8 +462,8 @@ public class ClientConductorTest
 
         conductor.addSubscription(CHANNEL, STREAM_ID_1);
 
-        conductor.onNewImage(
-            STREAM_ID_1, SESSION_ID_1, 0L, subscriberPositionMap, SESSION_ID_1 + "-log", SOURCE_INFO, CORRELATION_ID);
+        conductor.onAvailableImage(
+            STREAM_ID_1, SESSION_ID_1, subscriberPositionMap, SESSION_ID_1 + "-log", SOURCE_INFO, CORRELATION_ID);
 
         verify(logBuffersFactory).map(SESSION_ID_1 + "-log");
     }
@@ -473,18 +482,15 @@ public class ClientConductorTest
 
         final Subscription subscription = conductor.addSubscription(CHANNEL, STREAM_ID_1);
 
-        conductor.onNewImage(
-            STREAM_ID_1, SESSION_ID_1, 0L, subscriberPositionMap, SESSION_ID_1 + "-log", SOURCE_INFO, CORRELATION_ID);
+        conductor.onAvailableImage(
+            STREAM_ID_1, SESSION_ID_1, subscriberPositionMap, SESSION_ID_1 + "-log", SOURCE_INFO, CORRELATION_ID);
 
         assertFalse(subscription.hasNoImages());
-        verify(mockNewImageHandler)
-            .onNewImage(any(Image.class), eq(CHANNEL), eq(STREAM_ID_1), eq(SESSION_ID_1), eq(0L), eq(SOURCE_INFO));
+        verify(mockAvailableImageHandler).onAvailableImage(any(Image.class));
 
-        final long position = 0L;
-        conductor.onInactiveImage(STREAM_ID_1, SESSION_ID_1, position, CORRELATION_ID);
+        conductor.onUnavailableImage(STREAM_ID_1, CORRELATION_ID);
 
-        verify(mockInactiveImageHandler)
-            .onInactiveImage(any(Image.class), eq(CHANNEL), eq(STREAM_ID_1), eq(SESSION_ID_1), eq(position));
+        verify(mockUnavailableImageHandler).onUnavailableImage(any(Image.class));
         assertTrue(subscription.hasNoImages());
         assertFalse(subscription.hasImage(SESSION_ID_1));
     }
@@ -492,21 +498,32 @@ public class ClientConductorTest
     @Test
     public void shouldIgnoreUnknownNewImage()
     {
-        conductor.onNewImage(
-            STREAM_ID_2, SESSION_ID_2, 0L, subscriberPositionMap, SESSION_ID_2 + "-log", SOURCE_INFO, CORRELATION_ID_2);
+        conductor.onAvailableImage(
+            STREAM_ID_2, SESSION_ID_2, subscriberPositionMap, SESSION_ID_2 + "-log", SOURCE_INFO, CORRELATION_ID_2);
 
         verify(logBuffersFactory, never()).map(anyString());
-        verify(mockNewImageHandler, never())
-            .onNewImage(any(Image.class), anyString(), anyInt(), anyInt(), anyLong(), anyString());
+        verify(mockAvailableImageHandler, never()).onAvailableImage(any(Image.class));
     }
 
     @Test
     public void shouldIgnoreUnknownInactiveImage()
     {
-        conductor.onInactiveImage(STREAM_ID_2, SESSION_ID_2, 0L, CORRELATION_ID_2);
+        conductor.onUnavailableImage(STREAM_ID_2, CORRELATION_ID_2);
 
         verify(logBuffersFactory, never()).map(anyString());
-        verify(mockInactiveImageHandler, never()).onInactiveImage(any(Image.class), anyString(), anyInt(), anyInt(), anyLong());
+        verify(mockUnavailableImageHandler, never()).onUnavailableImage(any(Image.class));
+    }
+
+    @Test
+    public void shouldTimeoutInterServiceIfTooLongBetweenDoWorkCalls() throws Exception
+    {
+        suppressPrintError = true;
+
+        conductor.doWork();
+        Thread.sleep(INTER_SERVICE_TIMEOUT_MS + 10);
+        conductor.doWork();
+
+        verify(mockClientErrorHandler).onError(any(ConductorServiceTimeoutException.class));
     }
 
     private void whenReceiveBroadcastOnMessage(
@@ -520,5 +537,16 @@ public class ClientConductorTest
 
                 return 1;
             }).when(mockToClientReceiver).receive(anyObject());
+    }
+
+    private class PrintError implements ErrorHandler
+    {
+        public void onError(Throwable throwable)
+        {
+            if (!suppressPrintError)
+            {
+                throwable.printStackTrace();
+            }
+        }
     }
 }

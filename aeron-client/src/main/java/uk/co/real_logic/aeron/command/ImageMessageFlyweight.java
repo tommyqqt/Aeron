@@ -15,7 +15,7 @@
  */
 package uk.co.real_logic.aeron.command;
 
-import uk.co.real_logic.aeron.Flyweight;
+import uk.co.real_logic.agrona.MutableDirectBuffer;
 
 import java.nio.ByteOrder;
 
@@ -31,12 +31,7 @@ import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_INT;
  * |                        Correlation ID                         |
  * |                                                               |
  * +---------------------------------------------------------------+
- * |                          Session ID                           |
- * +---------------------------------------------------------------+
  * |                          Stream ID                            |
- * +---------------------------------------------------------------+
- * |                          Position                             |
- * |                                                               |
  * +---------------------------------------------------------------+
  * |                        Channel Length                         |
  * +---------------------------------------------------------------+
@@ -44,15 +39,30 @@ import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_INT;
  * ...                                                             |
  * +---------------------------------------------------------------+
  */
-public class ImageMessageFlyweight extends Flyweight
+public class ImageMessageFlyweight
 {
     private static final int CORRELATION_ID_OFFSET = 0;
-    private static final int SESSION_ID_OFFSET = 8;
-    private static final int STREAM_ID_FIELD_OFFSET = 12;
-    private static final int POSITION_FIELD_OFFSET =  16;
-    private static final int CHANNEL_OFFSET = 24;
+    private static final int STREAM_ID_FIELD_OFFSET = 8;
+    private static final int CHANNEL_OFFSET = 12;
 
+    private MutableDirectBuffer buffer;
+    private int offset;
     private int lengthOfChannel;
+
+    /**
+     * Wrap the buffer at a given offset for updates.
+     *
+     * @param buffer to wrap
+     * @param offset at which the message begins.
+     * @return for fluent API
+     */
+    public final ImageMessageFlyweight wrap(final MutableDirectBuffer buffer, final int offset)
+    {
+        this.buffer = buffer;
+        this.offset = offset;
+
+        return this;
+    }
 
     /**
      * return correlation id field
@@ -60,7 +70,7 @@ public class ImageMessageFlyweight extends Flyweight
      */
     public long correlationId()
     {
-        return buffer().getLong(offset() + CORRELATION_ID_OFFSET, ByteOrder.LITTLE_ENDIAN);
+        return buffer.getLong(offset + CORRELATION_ID_OFFSET);
     }
 
     /**
@@ -70,28 +80,7 @@ public class ImageMessageFlyweight extends Flyweight
      */
     public ImageMessageFlyweight correlationId(final long correlationId)
     {
-        buffer().putLong(offset() + CORRELATION_ID_OFFSET, correlationId, ByteOrder.LITTLE_ENDIAN);
-
-        return this;
-    }
-
-    /**
-     * return session id field
-     * @return session id field
-     */
-    public int sessionId()
-    {
-        return buffer().getInt(offset() + SESSION_ID_OFFSET, ByteOrder.LITTLE_ENDIAN);
-    }
-
-    /**
-     * set session id field
-     * @param sessionId field value
-     * @return flyweight
-     */
-    public ImageMessageFlyweight sessionId(final int sessionId)
-    {
-        buffer().putInt(offset() + SESSION_ID_OFFSET, sessionId, ByteOrder.LITTLE_ENDIAN);
+        buffer.putLong(offset + CORRELATION_ID_OFFSET, correlationId);
 
         return this;
     }
@@ -103,7 +92,7 @@ public class ImageMessageFlyweight extends Flyweight
      */
     public int streamId()
     {
-        return buffer().getInt(offset() + STREAM_ID_FIELD_OFFSET, ByteOrder.LITTLE_ENDIAN);
+        return buffer.getInt(offset + STREAM_ID_FIELD_OFFSET);
     }
 
     /**
@@ -114,30 +103,7 @@ public class ImageMessageFlyweight extends Flyweight
      */
     public ImageMessageFlyweight streamId(final int streamId)
     {
-        buffer().putInt(offset() + STREAM_ID_FIELD_OFFSET, streamId, ByteOrder.LITTLE_ENDIAN);
-
-        return this;
-    }
-
-    /**
-     * The position at which this image when inactive.
-     *
-     * @return position at which this image when inactive.
-     */
-    public long position()
-    {
-        return buffer().getLong(offset() + POSITION_FIELD_OFFSET, ByteOrder.LITTLE_ENDIAN);
-    }
-
-    /**
-     * The position at which this image when inactive.
-     *
-     * @param position at which this image when inactive.
-     * @return flyweight
-     */
-    public ImageMessageFlyweight position(final long position)
-    {
-        buffer().putLong(offset() + POSITION_FIELD_OFFSET, position, ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(offset + STREAM_ID_FIELD_OFFSET, streamId);
 
         return this;
     }
@@ -149,11 +115,10 @@ public class ImageMessageFlyweight extends Flyweight
      */
     public String channel()
     {
-        final int channelOffset = offset() + CHANNEL_OFFSET;
-        final int length = buffer().getInt(channelOffset, ByteOrder.LITTLE_ENDIAN);
+        final int length = buffer.getInt(offset + CHANNEL_OFFSET);
         lengthOfChannel = SIZE_OF_INT + length;
 
-        return buffer().getStringUtf8(channelOffset, length);
+        return buffer.getStringUtf8(offset + CHANNEL_OFFSET, length);
     }
 
     /**
@@ -164,7 +129,7 @@ public class ImageMessageFlyweight extends Flyweight
      */
     public ImageMessageFlyweight channel(final String channel)
     {
-        lengthOfChannel = stringPut(offset() + CHANNEL_OFFSET, channel, ByteOrder.LITTLE_ENDIAN);
+        lengthOfChannel = buffer.putStringUtf8(offset + CHANNEL_OFFSET, channel, ByteOrder.nativeOrder());
 
         return this;
     }

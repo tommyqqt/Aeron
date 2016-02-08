@@ -1,13 +1,19 @@
 Aeron
 =====
-[![Gitter](https://badges.gitter.im/Join Chat.svg)](https://gitter.im/real-logic/Aeron?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![Gitter](https://badges.gitter.im/Join Chat.svg)](https://gitter.im/real-logic/Aeron?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge) To chat with other Aeron users and the contributors.
 
-Efficient reliable unicast and multicast message transport.
+Efficient reliable UDP unicast, multicast, and IPC message transport.
+
+Performance is the key focus. Aeron is designed to be the highest throughput with the lowest and most predictable latency possible of any messaging system.
 
 For details of usage, protocol specification, FAQ, etc. please check out the
 [Wiki](https://github.com/real-logic/Aeron/wiki).
 
 For those who prefer to watch a video then try [Aeron Messaging](https://www.youtube.com/watch?v=tM4YskS94b0) from StrangeLoop 2014. Things have moved on quite a bit with performance and some features but the basic design still applies.
+
+For the latest version information and changes see the [Change Log](https://github.com/real-logic/Aeron/wiki/Change-Log). 
+
+The latest release and **downloads** can be found in [Maven Central](http://search.maven.org/#search%7Cga%7C1%7CAeron).
 
 ### How do I use Aeron?
 
@@ -30,7 +36,7 @@ For those who prefer to watch a video then try [Aeron Messaging](https://www.you
 
 License (See LICENSE file for full license)
 -------------------------------------------
-Copyright 2014 Real Logic Limited
+Copyright 2014 - 2015 Real Logic Limited
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -89,7 +95,7 @@ You require the following to build the C++ API for Aeron:
 and `zlib.h` currently.
 
 __NOTE__: Aeron is supported on Linux, Mac, and Windows. Windows builds require Visual Studio and are being developed
-with Visual Studio Express 12 with 64-bit builds only. Cygwin, MSys, etc. may work, but are not maintained at this time.
+with Visual Studio 2013 and 2015 with 64-bit builds only. Cygwin, MSys, etc. may work, but are not maintained at this time.
 
 For convenience, a script is provided that does a full clean, build, and test of all targets as a Release build.
 
@@ -116,13 +122,13 @@ by running `cpack` directly.
 Running Samples
 ---------------
 
-Start up a media driver which will create the data and conductor directories. On Linux, this will probably be at `/tmp/aeron`.
+Start up a media driver which will create the data and conductor directories. On Linux, this will probably be in `/dev/shm/aeron` or `/tmp/aeron`.
 
     $ java -cp aeron-samples/build/libs/samples.jar uk.co.real_logic.aeron.driver.MediaDriver
 
 Alternatively, specify the data and conductor directories. The following example uses the shared memory 'directory' on Linux, but you could just as easily point to the regular filesystem.
 
-    $ java -cp aeron-samples/build/libs/samples.jar -Daeron.dir.conductor=/dev/shm/aeron/conductor -Daeron.dir.data=/dev/shm/aeron/data uk.co.real_logic.aeron.driver.MediaDriver
+    $ java -cp aeron-samples/build/libs/samples.jar -Daeron.dir=/dev/shm/aeron uk.co.real_logic.aeron.driver.MediaDriver
 
 You can run the `BasicSubscriber` from a command line. On Linux, this will be pointing to the `/dev/shm` shared memory directory, so be sure your `MediaDriver` is doing the same!
 
@@ -154,7 +160,7 @@ Troubleshooting
   
   To alleviate, check to make sure you have enough disk space.
 
-  In the samples, on Linux, this will probably be either at `/dev/shm` or `/tmp/aeron` (depending on your settings).
+  In the samples, on Linux, this will probably be either at `/dev/shm/aeron` or `/tmp/aeron` (depending on your settings).
 
   See this [thread](https://issues.apache.org/jira/browse/CASSANDRA-5737?focusedCommentId=14251018&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-14251018) for a similar problem.
   

@@ -136,11 +136,27 @@ int main(int argc, char** argv)
 
             if (result < 0)
             {
-                std::cout << " ah?!" << std::endl;
+                if (NOT_CONNECTED == result)
+                {
+                    std::cout << " not connected yet." << std::endl;
+                }
+                else if (BACK_PRESSURED == result)
+                {
+                    std::cout << " back pressured." << std::endl;
+                }
+                else
+                {
+                    std::cout << " ah?! unknown " << result << std::endl;
+                }
             }
             else
             {
                 std::cout << " yay!" << std::endl;
+            }
+
+            if (!publication->isStillConnected())
+            {
+                std::cout << "No active subscribers detected" << std::endl;
             }
 
             std::this_thread::sleep_for(std::chrono::seconds(1));

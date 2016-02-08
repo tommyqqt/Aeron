@@ -16,15 +16,19 @@
 package uk.co.real_logic.aeron.logbuffer;
 
 import uk.co.real_logic.agrona.DirectBuffer;
-import uk.co.real_logic.agrona.MutableDirectBuffer;
-import uk.co.real_logic.agrona.UnsafeAccess;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
-import java.nio.ByteOrder;
-
-import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.*;
-import static uk.co.real_logic.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
-import static uk.co.real_logic.agrona.BitUtil.*;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.BEGIN_FRAG_FLAG;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.END_FRAG_FLAG;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.PADDING_FRAME_TYPE;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.frameFlags;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.frameLengthOrdered;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.frameType;
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.TERM_STATUS_OFFSET;
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.TERM_TAIL_COUNTER_OFFSET;
+import static uk.co.real_logic.aeron.protocol.DataHeaderFlyweight.*;
+import static uk.co.real_logic.agrona.BitUtil.align;
 
 /**
  * Term buffer appender which supports many producers concurrently writing an append-only log.
@@ -32,7 +36,6 @@ import static uk.co.real_logic.agrona.BitUtil.*;
  * <b>Note:</b> This class is threadsafe.
  *
  * Messages are appended to a term using a framing protocol as described in {@link FrameDescriptor}.
- * If a message is larger than what will fit in a single frame will be fragmented up to {@link #maxMessageLength()}.
  *
  * A default message header is applied to each message with the fields filled in for fragment flags, type, term number,
  * as appropriate.
@@ -40,7 +43,7 @@ import static uk.co.real_logic.agrona.BitUtil.*;
  * A message of type {@link FrameDescriptor#PADDING_FRAME_TYPE} is appended at the end of the buffer if claimed
  * space is not sufficiently large to accommodate the message about to be written.
  */
-public class TermAppender extends LogBufferPartition
+public class TermAppender
 {
     /**
      * The append operation tripped the end of the buffer and needs to rotate.
@@ -52,165 +55,181 @@ public class TermAppender extends LogBufferPartition
      */
     public static final int FAILED = -2;
 
-    private final int maxMessageLength;
-    private final int maxFrameLength;
-    private final int maxPayloadLength;
-    private final MutableDirectBuffer defaultHeader;
+    private final UnsafeBuffer termBuffer;
+    private final UnsafeBuffer metaDataBuffer;
 
     /**
      * Construct a view over a term buffer and state buffer for appending frames.
      *
      * @param termBuffer     for where messages are stored.
      * @param metaDataBuffer for where the state of writers is stored manage concurrency.
-     * @param defaultHeader  to be applied for each frame logged.
-     * @param maxFrameLength maximum frame length supported by the underlying transport.
      */
-    public TermAppender(
-        final UnsafeBuffer termBuffer,
-        final UnsafeBuffer metaDataBuffer,
-        final MutableDirectBuffer defaultHeader,
-        final int maxFrameLength)
+    public TermAppender(final UnsafeBuffer termBuffer, final UnsafeBuffer metaDataBuffer)
     {
-        super(termBuffer, metaDataBuffer);
-
-        checkHeaderLength(defaultHeader.capacity());
-        checkMaxFrameLength(maxFrameLength);
-        termBuffer.verifyAlignment();
-        metaDataBuffer.verifyAlignment();
-
-        this.defaultHeader = defaultHeader;
-        this.maxFrameLength = maxFrameLength;
-        this.maxMessageLength = FrameDescriptor.computeMaxMessageLength(termBuffer.capacity());
-        this.maxPayloadLength = maxFrameLength - HEADER_LENGTH;
+        this.termBuffer = termBuffer;
+        this.metaDataBuffer = metaDataBuffer;
     }
 
     /**
-     * The maximum length of a message that can be recorded in the term.
+     * The log of messages for a term.
      *
-     * @return the maximum length of a message that can be recorded in the term.
+     * @return the log of messages for a term.
      */
-    public int maxMessageLength()
+    public UnsafeBuffer termBuffer()
     {
-        return maxMessageLength;
+        return termBuffer;
     }
 
     /**
-     * The maximum length of a message payload within a frame before fragmentation takes place.
+     * The meta data describing the term.
      *
-     * @return the maximum length of a message that can be recorded in the term.
+     * @return the meta data describing the term.
      */
-    public int maxPayloadLength()
+    public UnsafeBuffer metaDataBuffer()
     {
-        return maxPayloadLength;
+        return metaDataBuffer;
     }
 
     /**
-     * The maximum length of a frame, including header, that can be recorded in the term.
+     * Get the raw value current tail value in a volatile memory ordering fashion.
      *
-     * @return the maximum length of a frame, including header, that can be recorded in the term.
+     * @return the current tail value.
      */
-    public int maxFrameLength()
+    public long rawTailVolatile()
     {
-        return maxFrameLength;
+        return metaDataBuffer.getLongVolatile(TERM_TAIL_COUNTER_OFFSET);
     }
 
     /**
-     * Append a message to the term if sufficient capacity exists.
+     * Set the value for the tail counter.
      *
-     * @param srcBuffer containing the encoded message.
-     * @param srcOffset at which the encoded message begins.
-     * @param length    of the message in bytes.
-     * @return the resulting termOffset on success otherwise {@link #FAILED} if beyond end of the term, or
-     * {@link #TRIPPED} if first failure.
-     * @throws IllegalArgumentException if the length is greater than {@link #maxMessageLength()}
+     * @param termId for the tail counter
      */
-    public int append(final DirectBuffer srcBuffer, final int srcOffset, final int length)
+    public void tailTermId(final int termId)
     {
-        final int resultingOffset;
-        if (length <= maxPayloadLength)
+        metaDataBuffer.putLong(TERM_TAIL_COUNTER_OFFSET, ((long)termId) << 32);
+    }
+
+    /**
+     * Set the status of the log buffer with StoreStore memory ordering semantics.
+     *
+     * @param status to be set for the log buffer.
+     */
+    public void statusOrdered(final int status)
+    {
+        metaDataBuffer.putIntOrdered(TERM_STATUS_OFFSET, status);
+    }
+
+    /**
+     * Claim length of a the term buffer for writing in the message with zero copy semantics.
+     *
+     * @param header      for writing the default header.
+     * @param length      of the message to be written.
+     * @param bufferClaim to be updated with the claimed region.
+     * @return the resulting offset of the term after the append on success otherwise {@link #TRIPPED} or {@link #FAILED}
+     * packed with the termId if a padding record was inserted at the end.
+     */
+    public long claim(final HeaderWriter header, final int length, final BufferClaim bufferClaim)
+    {
+        final int frameLength = length + HEADER_LENGTH;
+        final int alignedLength = align(frameLength, FRAME_ALIGNMENT);
+        final long rawTail = getAndAddRawTail(alignedLength);
+        final long termOffset = rawTail & 0xFFFF_FFFFL;
+
+        final UnsafeBuffer termBuffer = this.termBuffer;
+        final int termLength = termBuffer.capacity();
+
+        long resultingOffset = termOffset + alignedLength;
+        if (resultingOffset > (termLength - HEADER_LENGTH))
         {
-            resultingOffset = appendUnfragmentedMessage(srcBuffer, srcOffset, length);
+            resultingOffset = handleEndOfLogCondition(termBuffer, termOffset, header, termLength, termId(rawTail));
         }
         else
         {
-            if (length > maxMessageLength)
-            {
-                throw new IllegalArgumentException(String.format(
-                    "Encoded message exceeds maxMessageLength of %d, length=%d", maxMessageLength, length));
-            }
-
-            resultingOffset = appendFragmentedMessage(srcBuffer, srcOffset, length);
+            final int offset = (int)termOffset;
+            header.write(termBuffer, offset, frameLength, termId(rawTail));
+            bufferClaim.wrap(termBuffer, offset, frameLength);
         }
 
         return resultingOffset;
     }
 
     /**
-     * Claim a range within the buffer for recording a message payload.
+     * Append an unfragmented message to the the term buffer.
      *
-     * @param length      of the message payload
-     * @param bufferClaim to be completed for the claim if successful.
-     * @return the resulting termOffset on success otherwise {@link #FAILED} if beyond end of the term, or
-     * {@link #TRIPPED} if first failure.
+     * @param header    for writing the default header.
+     * @param srcBuffer containing the message.
+     * @param srcOffset at which the message begins.
+     * @param length    of the message in the source buffer.
+     * @return the resulting offset of the term after the append on success otherwise {@link #TRIPPED} or {@link #FAILED}
+     * packed with the termId if a padding record was inserted at the end.
      */
-    public int claim(final int length, final BufferClaim bufferClaim)
+    public long appendUnfragmentedMessage(
+        final HeaderWriter header, final DirectBuffer srcBuffer, final int srcOffset, final int length)
     {
-        if (length > maxPayloadLength)
-        {
-            throw new IllegalArgumentException(String.format(
-                "Claim exceeds maxPayloadLength of %d, length=%d", maxPayloadLength, length));
-        }
-
         final int frameLength = length + HEADER_LENGTH;
         final int alignedLength = align(frameLength, FRAME_ALIGNMENT);
-        final int frameOffset = metaDataBuffer().getAndAddInt(LogBufferDescriptor.TERM_TAIL_COUNTER_OFFSET, alignedLength);
-        final UnsafeBuffer termBuffer = termBuffer();
+        final long rawTail = getAndAddRawTail(alignedLength);
+        final long termOffset = rawTail & 0xFFFF_FFFFL;
 
-        final int resultingOffset = computeResultingOffset(termBuffer, frameOffset, alignedLength, termBuffer.capacity());
-        if (resultingOffset > 0)
+        final UnsafeBuffer termBuffer = this.termBuffer;
+        final int termLength = termBuffer.capacity();
+
+        long resultingOffset = termOffset + alignedLength;
+        if (resultingOffset > (termLength - HEADER_LENGTH))
         {
-            applyDefaultHeader(termBuffer, frameOffset, frameLength, defaultHeader);
-            frameTermOffset(termBuffer, frameOffset, frameOffset);
-
-            bufferClaim.wrap(termBuffer, frameOffset, frameLength);
+            resultingOffset = handleEndOfLogCondition(termBuffer, termOffset, header, termLength, termId(rawTail));
+        }
+        else
+        {
+            final int offset = (int)termOffset;
+            header.write(termBuffer, offset, frameLength, termId(rawTail));
+            termBuffer.putBytes(offset + HEADER_LENGTH, srcBuffer, srcOffset, length);
+            frameLengthOrdered(termBuffer, offset, frameLength);
         }
 
         return resultingOffset;
     }
 
-    private int appendUnfragmentedMessage(final DirectBuffer srcBuffer, final int srcOffset, final int length)
-    {
-        final int frameLength = length + HEADER_LENGTH;
-        final int alignedLength = align(frameLength, FRAME_ALIGNMENT);
-        final int frameOffset = metaDataBuffer().getAndAddInt(LogBufferDescriptor.TERM_TAIL_COUNTER_OFFSET, alignedLength);
-        final UnsafeBuffer termBuffer = termBuffer();
-
-        final int resultingOffset = computeResultingOffset(termBuffer, frameOffset, alignedLength, termBuffer.capacity());
-        if (resultingOffset > 0)
-        {
-            applyDefaultHeader(termBuffer, frameOffset, frameLength, defaultHeader);
-            termBuffer.putBytes(frameOffset + HEADER_LENGTH, srcBuffer, srcOffset, length);
-
-            frameTermOffset(termBuffer, frameOffset, frameOffset);
-            frameLengthOrdered(termBuffer, frameOffset, frameLength);
-        }
-
-        return resultingOffset;
-    }
-
-    private int appendFragmentedMessage(final DirectBuffer srcBuffer, final int srcOffset, final int length)
+    /**
+     * Append a fragmented message to the the term buffer.
+     * The message will be split up into fragments of MTU length minus header.
+     *
+     * @param header           for writing the default header.
+     * @param srcBuffer        containing the message.
+     * @param srcOffset        at which the message begins.
+     * @param length           of the message in the source buffer.
+     * @param maxPayloadLength that the message will be fragmented into.
+     * @return the resulting offset of the term after the append on success otherwise {@link #TRIPPED} or {@link #FAILED}
+     * packed with the termId if a padding record was inserted at the end.
+     */
+    public long appendFragmentedMessage(
+        final HeaderWriter header,
+        final DirectBuffer srcBuffer,
+        final int srcOffset,
+        final int length,
+        final int maxPayloadLength)
     {
         final int numMaxPayloads = length / maxPayloadLength;
         final int remainingPayload = length % maxPayloadLength;
-        final int lastFrameLength = (remainingPayload > 0) ? align(remainingPayload + HEADER_LENGTH, FRAME_ALIGNMENT) : 0;
-        final int requiredLength = (numMaxPayloads * maxFrameLength) + lastFrameLength;
-        int frameOffset = metaDataBuffer().getAndAddInt(LogBufferDescriptor.TERM_TAIL_COUNTER_OFFSET, requiredLength);
-        final UnsafeBuffer termBuffer = termBuffer();
+        final int lastFrameLength = remainingPayload > 0 ? align(remainingPayload + HEADER_LENGTH, FRAME_ALIGNMENT) : 0;
+        final int requiredLength = (numMaxPayloads * (maxPayloadLength + HEADER_LENGTH)) + lastFrameLength;
+        final long rawTail = getAndAddRawTail(requiredLength);
+        final int termId = termId(rawTail);
+        final long termOffset = rawTail & 0xFFFF_FFFFL;
 
-        final int resultingOffset = computeResultingOffset(termBuffer, frameOffset, requiredLength, termBuffer.capacity());
-        if (resultingOffset > 0)
+        final UnsafeBuffer termBuffer = this.termBuffer;
+        final int termLength = termBuffer.capacity();
+
+        long resultingOffset = termOffset + requiredLength;
+        if (resultingOffset > (termLength - HEADER_LENGTH))
         {
-            byte flags = BEGIN_FRAG;
+            resultingOffset = handleEndOfLogCondition(termBuffer, termOffset, header, termLength, termId);
+        }
+        else
+        {
+            int offset = (int)termOffset;
+            byte flags = BEGIN_FRAG_FLAG;
             int remaining = length;
             do
             {
@@ -218,24 +237,23 @@ public class TermAppender extends LogBufferPartition
                 final int frameLength = bytesToWrite + HEADER_LENGTH;
                 final int alignedLength = align(frameLength, FRAME_ALIGNMENT);
 
-                applyDefaultHeader(termBuffer, frameOffset, frameLength, defaultHeader);
+                header.write(termBuffer, offset, frameLength, termId);
                 termBuffer.putBytes(
-                    frameOffset + HEADER_LENGTH,
+                    offset + HEADER_LENGTH,
                     srcBuffer,
                     srcOffset + (length - remaining),
                     bytesToWrite);
 
                 if (remaining <= maxPayloadLength)
                 {
-                    flags |= END_FRAG;
+                    flags |= END_FRAG_FLAG;
                 }
 
-                frameFlags(termBuffer, frameOffset, flags);
-                frameTermOffset(termBuffer, frameOffset, frameOffset);
-                frameLengthOrdered(termBuffer, frameOffset, frameLength);
+                frameFlags(termBuffer, offset, flags);
+                frameLengthOrdered(termBuffer, offset, frameLength);
 
                 flags = 0;
-                frameOffset += alignedLength;
+                offset += alignedLength;
                 remaining -= bytesToWrite;
             }
             while (remaining > 0);
@@ -244,43 +262,66 @@ public class TermAppender extends LogBufferPartition
         return resultingOffset;
     }
 
-    private int computeResultingOffset(
-        final UnsafeBuffer termBuffer, final int frameOffset, final int length, final int capacity)
+
+    /**
+     * Pack the values for termOffset and termId into a long for returning on the stack.
+     *
+     * @param termId     value to be packed.
+     * @param termOffset value to be packed.
+     * @return a long with both ints packed into it.
+     */
+    public static long pack(final int termId, final int termOffset)
     {
-        int resultingOffset = frameOffset + length;
-        if (resultingOffset > (capacity - HEADER_LENGTH))
-        {
-            resultingOffset = FAILED;
-
-            if (frameOffset <= (capacity - HEADER_LENGTH))
-            {
-                final int frameLength = capacity - frameOffset;
-                applyDefaultHeader(termBuffer, frameOffset, frameLength, defaultHeader);
-
-                frameType(termBuffer, frameOffset, PADDING_FRAME_TYPE);
-                frameTermOffset(termBuffer, frameOffset, frameOffset);
-                frameLengthOrdered(termBuffer, frameOffset, frameLength);
-
-                resultingOffset = TRIPPED;
-            }
-        }
-
-        return resultingOffset;
+        return ((long)termId << 32) | (termOffset & 0xFFFF_FFFFL);
     }
 
-    private static void applyDefaultHeader(
-        final UnsafeBuffer buffer, final int frameOffset, final int frameLength, final MutableDirectBuffer defaultHeaderBuffer)
+    /**
+     * The termOffset as a result of the append
+     *
+     * @param result into which the termOffset value has been packed.
+     * @return the termOffset after the append
+     */
+    public static int termOffset(final long result)
     {
-        buffer.putInt(frameOffset, -frameLength, ByteOrder.LITTLE_ENDIAN);
-        UnsafeAccess.UNSAFE.storeFence();
+        return (int)result;
+    }
 
-        int headerOffset = SIZE_OF_INT;
-        buffer.putInt(frameOffset + headerOffset, defaultHeaderBuffer.getInt(headerOffset));
+    /**
+     * The termId in which the append operation took place.
+     *
+     * @param result into which the termId value has been packed.
+     * @return the termId in which the append operation took place.
+     */
+    public static int termId(final long result)
+    {
+        return (int)(result >>> 32);
+    }
 
-        headerOffset += SIZE_OF_INT;
-        buffer.putLong(frameOffset + headerOffset, defaultHeaderBuffer.getLong(headerOffset));
+    private long handleEndOfLogCondition(
+        final UnsafeBuffer termBuffer,
+        final long termOffset,
+        final HeaderWriter header,
+        final int termLength,
+        final int termId)
+    {
+        int resultingOffset = FAILED;
 
-        headerOffset += SIZE_OF_LONG;
-        buffer.putLong(frameOffset + headerOffset, defaultHeaderBuffer.getLong(headerOffset));
+        if (termOffset <= (termLength - HEADER_LENGTH))
+        {
+            final int offset = (int)termOffset;
+            final int paddingLength = termLength - offset;
+            header.write(termBuffer, offset, paddingLength, termId);
+            frameType(termBuffer, offset, PADDING_FRAME_TYPE);
+            frameLengthOrdered(termBuffer, offset, paddingLength);
+
+            resultingOffset = TRIPPED;
+        }
+
+        return pack(termId, resultingOffset);
+    }
+
+    private long getAndAddRawTail(final int alignedLength)
+    {
+        return metaDataBuffer.getAndAddLong(TERM_TAIL_COUNTER_OFFSET, alignedLength);
     }
 }

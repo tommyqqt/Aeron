@@ -15,23 +15,42 @@
  */
 package uk.co.real_logic.aeron.driver;
 
+import uk.co.real_logic.agrona.concurrent.AtomicCounter;
+
 /**
  * Tracks a aeron client interest registration in a {@link NetworkPublication}.
  */
-public class PublicationLink
+public class PublicationLink implements DriverManagedResource
 {
     private final long registrationId;
-    private final NetworkPublication publication;
+    private final long unblockTimeoutNs;
+    private final DriverManagedResource publication;
     private final AeronClient client;
+    private final AtomicCounter unblockedPublications;
 
-    public PublicationLink(final long registrationId, final NetworkPublication publication, final AeronClient client)
+    private long lastConsumerPosition;
+    private long timeOfLastConsumerPositionChange;
+    private boolean reachedEndOfLife = false;
+
+    public PublicationLink(
+        final long registrationId,
+        final DriverManagedResource publication,
+        final AeronClient client,
+        final long now,
+        final long unblockTimeoutNs,
+        final SystemCounters systemCounters)
     {
         this.registrationId = registrationId;
         this.publication = publication;
         this.client = client;
+        this.publication.incRef();
+        this.lastConsumerPosition = publication.consumerPosition();
+        this.timeOfLastConsumerPositionChange = now;
+        this.unblockTimeoutNs = unblockTimeoutNs;
+        this.unblockedPublications = systemCounters.unblockedPublications();
     }
 
-    public void remove()
+    public void close()
     {
         publication.decRef();
     }
@@ -41,15 +60,49 @@ public class PublicationLink
         return registrationId;
     }
 
-    public boolean hasClientTimedOut(final long now)
+    public void onTimeEvent(final long time, final DriverConductor conductor)
     {
-        final boolean hasClientTimedOut = client.hasTimedOut(now);
-
-        if (hasClientTimedOut)
+        if (client.hasTimedOut(time))
         {
-            publication.decRef();
+            reachedEndOfLife = true;
         }
 
-        return hasClientTimedOut;
+        final long consumerPosition = publication.consumerPosition();
+        if (consumerPosition == lastConsumerPosition)
+        {
+            if (publication.producerPosition() > consumerPosition &&
+                time > (timeOfLastConsumerPositionChange + unblockTimeoutNs))
+            {
+                if (publication.unblockAtConsumerPosition())
+                {
+                    unblockedPublications.orderedIncrement();
+                }
+            }
+        }
+        else
+        {
+            timeOfLastConsumerPositionChange = time;
+            lastConsumerPosition = consumerPosition;
+        }
+    }
+
+    public boolean hasReachedEndOfLife()
+    {
+        return reachedEndOfLife;
+    }
+
+    public void timeOfLastStateChange(final long time)
+    {
+        // not set this way
+    }
+
+    public long timeOfLastStateChange()
+    {
+        return client.timeOfLastKeepalive();
+    }
+
+    public void delete()
+    {
+        close();
     }
 }

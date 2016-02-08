@@ -25,18 +25,24 @@ import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
 import java.net.InetSocketAddress;
 
+import static uk.co.real_logic.aeron.driver.DataPacketDispatcher.SessionStatus.*;
+
 /**
- * Handling of dispatching data packets to {@link NetworkedImage}s streams.
+ * Handling of dispatching data packets to {@link PublicationImage}s streams.
  *
  * All methods should be called via {@link Receiver} thread
  */
 public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHandler
 {
-    private static final Integer PENDING_SETUP_FRAME = 1;
-    private static final Integer INIT_IN_PROGRESS = 2;
+    public enum SessionStatus
+    {
+        PENDING_SETUP_FRAME,
+        INIT_IN_PROGRESS,
+        ON_COOL_DOWN,
+    }
 
-    private final BiInt2ObjectMap<Integer> initialisationInProgressMap = new BiInt2ObjectMap<>();
-    private final Int2ObjectHashMap<Int2ObjectHashMap<NetworkedImage>> sessionsByStreamIdMap = new Int2ObjectHashMap<>();
+    private final BiInt2ObjectMap<SessionStatus> ignoredSessionsMap = new BiInt2ObjectMap<>();
+    private final Int2ObjectHashMap<Int2ObjectHashMap<PublicationImage>> sessionsByStreamIdMap = new Int2ObjectHashMap<>();
     private final DriverConductorProxy conductorProxy;
     private final Receiver receiver;
 
@@ -56,52 +62,61 @@ public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHand
 
     public void removeSubscription(final int streamId)
     {
-        final Int2ObjectHashMap<NetworkedImage> imageBySessionIdMap = sessionsByStreamIdMap.remove(streamId);
+        final Int2ObjectHashMap<PublicationImage> imageBySessionIdMap = sessionsByStreamIdMap.remove(streamId);
         if (null == imageBySessionIdMap)
         {
             throw new UnknownSubscriptionException("No subscription registered on stream " + streamId);
         }
 
-        imageBySessionIdMap.values().forEach(NetworkedImage::ifActiveGoInactive);
+        imageBySessionIdMap.values().forEach(PublicationImage::ifActiveGoInactive);
     }
 
-    public void addImage(final NetworkedImage image)
+    public void addPublicationImage(final PublicationImage image)
     {
         final int sessionId = image.sessionId();
         final int streamId = image.streamId();
 
-        final Int2ObjectHashMap<NetworkedImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
+        final Int2ObjectHashMap<PublicationImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
         if (null == imageBySessionIdMap)
         {
             throw new IllegalStateException("No subscription registered on stream " + streamId);
         }
 
         imageBySessionIdMap.put(sessionId, image);
-        initialisationInProgressMap.remove(sessionId, streamId);
+        ignoredSessionsMap.remove(sessionId, streamId);
 
-        image.status(NetworkedImage.Status.ACTIVE);
+        image.status(PublicationImage.Status.ACTIVE);
     }
 
-    public void removeImage(final NetworkedImage image)
+    public void removePublicationImage(final PublicationImage image)
     {
         final int sessionId = image.sessionId();
         final int streamId = image.streamId();
 
-        final Int2ObjectHashMap<NetworkedImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
+        final Int2ObjectHashMap<PublicationImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
         if (null != imageBySessionIdMap)
         {
             imageBySessionIdMap.remove(sessionId);
-            initialisationInProgressMap.remove(sessionId, streamId);
+            ignoredSessionsMap.remove(sessionId, streamId);
         }
 
         image.ifActiveGoInactive();
+        ignoredSessionsMap.put(sessionId, streamId, ON_COOL_DOWN);
     }
 
     public void removePendingSetup(final int sessionId, final int streamId)
     {
-        if (PENDING_SETUP_FRAME.equals(initialisationInProgressMap.get(sessionId, streamId)))
+        if (PENDING_SETUP_FRAME == ignoredSessionsMap.get(sessionId, streamId))
         {
-            initialisationInProgressMap.remove(sessionId, streamId);
+            ignoredSessionsMap.remove(sessionId, streamId);
+        }
+    }
+
+    public void removeCoolDown(final int sessionId, final int streamId)
+    {
+        if (ON_COOL_DOWN == ignoredSessionsMap.get(sessionId, streamId))
+        {
+            ignoredSessionsMap.remove(sessionId, streamId);
         }
     }
 
@@ -113,19 +128,19 @@ public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHand
         final InetSocketAddress srcAddress)
     {
         final int streamId = header.streamId();
-        final Int2ObjectHashMap<NetworkedImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
+        final Int2ObjectHashMap<PublicationImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
 
         if (null != imageBySessionIdMap)
         {
             final int sessionId = header.sessionId();
             final int termId = header.termId();
-            final NetworkedImage image = imageBySessionIdMap.get(sessionId);
+            final PublicationImage image = imageBySessionIdMap.get(sessionId);
 
             if (null != image)
             {
                 return image.insertPacket(termId, header.termOffset(), buffer, length);
             }
-            else if (null == initialisationInProgressMap.get(sessionId, streamId))
+            else if (null == ignoredSessionsMap.get(sessionId, streamId))
             {
                 elicitSetupMessageFromSource(channelEndpoint, srcAddress, streamId, sessionId);
             }
@@ -138,22 +153,21 @@ public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHand
         final ReceiveChannelEndpoint channelEndpoint,
         final SetupFlyweight header,
         final UnsafeBuffer buffer,
-        final int length,
         final InetSocketAddress srcAddress)
     {
         final int streamId = header.streamId();
-        final Int2ObjectHashMap<NetworkedImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
+        final Int2ObjectHashMap<PublicationImage> imageBySessionIdMap = sessionsByStreamIdMap.get(streamId);
 
         if (null != imageBySessionIdMap)
         {
             final int sessionId = header.sessionId();
             final int initialTermId = header.initialTermId();
             final int activeTermId = header.activeTermId();
-            final NetworkedImage image = imageBySessionIdMap.get(sessionId);
+            final PublicationImage image = imageBySessionIdMap.get(sessionId);
 
-            if (null == image && isNotAlreadyInProgress(streamId, sessionId))
+            if (null == image && isNotAlreadyInProgressOrOnCoolDown(streamId, sessionId))
             {
-                createImage(
+                createPublicationImage(
                     channelEndpoint,
                     srcAddress,
                     streamId,
@@ -167,9 +181,11 @@ public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHand
         }
     }
 
-    private boolean isNotAlreadyInProgress(final int streamId, final int sessionId)
+    private boolean isNotAlreadyInProgressOrOnCoolDown(final int streamId, final int sessionId)
     {
-        return !INIT_IN_PROGRESS.equals(initialisationInProgressMap.get(sessionId, streamId));
+        final SessionStatus status = ignoredSessionsMap.get(sessionId, streamId);
+
+        return INIT_IN_PROGRESS != status && ON_COOL_DOWN != status;
     }
 
     private void elicitSetupMessageFromSource(
@@ -181,13 +197,13 @@ public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHand
         final InetSocketAddress controlAddress =
             channelEndpoint.isMulticast() ? channelEndpoint.udpChannel().remoteControl() : srcAddress;
 
-        initialisationInProgressMap.put(sessionId, streamId, PENDING_SETUP_FRAME);
+        ignoredSessionsMap.put(sessionId, streamId, PENDING_SETUP_FRAME);
 
         channelEndpoint.sendSetupElicitingStatusMessage(controlAddress, sessionId, streamId);
         receiver.addPendingSetupMessage(sessionId, streamId, channelEndpoint);
     }
 
-    private void createImage(
+    private void createPublicationImage(
         final ReceiveChannelEndpoint channelEndpoint,
         final InetSocketAddress srcAddress,
         final int streamId,
@@ -201,8 +217,8 @@ public class DataPacketDispatcher implements DataPacketHandler, SetupMessageHand
         final InetSocketAddress controlAddress =
             channelEndpoint.isMulticast() ? channelEndpoint.udpChannel().remoteControl() : srcAddress;
 
-        initialisationInProgressMap.put(sessionId, streamId, INIT_IN_PROGRESS);
-        conductorProxy.createImage(
+        ignoredSessionsMap.put(sessionId, streamId, INIT_IN_PROGRESS);
+        conductorProxy.createPublicationImage(
             sessionId,
             streamId,
             initialTermId,

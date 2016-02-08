@@ -26,12 +26,13 @@ import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.computeLogLen
 import static uk.co.real_logic.aeron.driver.buffer.FileMappingConvention.streamLocation;
 
 /**
- * Factory for creating new {@link RawLog} in the publications or subscriptions directories as appropriate.
+ * Factory for creating new {@link RawLog} in the source publications or rebuilt publication images directories as appropriate.
  */
 public class RawLogFactory implements AutoCloseable
 {
     private final int publicationTermBufferLength;
     private final int imagesTermBufferMaxLength;
+    private final int ipcPublicationTermBufferLength;
     private final FileChannel blankTemplate;
     private final File publicationsDir;
     private final File imagesDir;
@@ -41,6 +42,7 @@ public class RawLogFactory implements AutoCloseable
         final String dataDirectoryName,
         final int publicationTermBufferLength,
         final int imagesTermBufferMaxLength,
+        final int ipcPublicationTermBufferLength,
         final EventLogger logger)
     {
         this.logger = logger;
@@ -54,8 +56,10 @@ public class RawLogFactory implements AutoCloseable
 
         this.publicationTermBufferLength = publicationTermBufferLength;
         this.imagesTermBufferMaxLength = imagesTermBufferMaxLength;
+        this.ipcPublicationTermBufferLength = ipcPublicationTermBufferLength;
 
-        final int maxTermLength = Math.max(publicationTermBufferLength, imagesTermBufferMaxLength);
+        int maxTermLength = Math.max(publicationTermBufferLength, ipcPublicationTermBufferLength);
+        maxTermLength = Math.max(maxTermLength, imagesTermBufferMaxLength);
         final long blankTemplateLength = computeLogLength(maxTermLength);
 
         blankTemplate = createTemplateFile(dataDirectoryName, "blankTemplate", blankTemplateLength);
@@ -85,13 +89,13 @@ public class RawLogFactory implements AutoCloseable
      * @param correlationId to use to distinguish this publication
      * @return the newly allocated {@link RawLog}
      */
-    public RawLog newPublication(final String channel, final int sessionId, final int streamId, final long correlationId)
+    public RawLog newNetworkPublication(final String channel, final int sessionId, final int streamId, final long correlationId)
     {
         return newInstance(publicationsDir, channel, sessionId, streamId, correlationId, publicationTermBufferLength);
     }
 
     /**
-     * Create new {@link RawLog} in the subscriptions directory for the supplied triplet.
+     * Create new {@link RawLog} in the rebuilt publication images directory for the supplied triplet.
      *
      * @param channel          address on the media to listened to.
      * @param sessionId        under which transmissions are made.
@@ -100,7 +104,7 @@ public class RawLogFactory implements AutoCloseable
      * @param termBufferLength to use for the log buffer
      * @return the newly allocated {@link RawLog}
      */
-    public RawLog newImage(
+    public RawLog newNetworkedImage(
         final String channel, final int sessionId, final int streamId, final long correlationId, final int termBufferLength)
     {
         if (termBufferLength > imagesTermBufferMaxLength)
@@ -110,6 +114,19 @@ public class RawLogFactory implements AutoCloseable
         }
 
         return newInstance(imagesDir, channel, sessionId, streamId, correlationId, termBufferLength);
+    }
+
+    /**
+     * Create a new {@link RawLog} in the publication directory for the supplied parameters.
+     *
+     * @param sessionId     under which publications are made.
+     * @param streamId      within the IPC channel
+     * @param correlationId to use to distinguish this shared log
+     * @return the newly allocated {@link RawLog}
+     */
+    public RawLog newDirectPublication(final int sessionId, final int streamId, final long correlationId)
+    {
+        return newInstance(publicationsDir, "ipc", sessionId, streamId, correlationId, ipcPublicationTermBufferLength);
     }
 
     private static FileChannel createTemplateFile(final String dataDir, final String name, final long length)

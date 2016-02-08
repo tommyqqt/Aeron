@@ -127,6 +127,11 @@ fragment_handler_t rateReporterHandler(RateReporter& rateReporter)
     return [&](AtomicBuffer&, util::index_t, util::index_t length, Header&) { rateReporter.onMessage(1, length); };
 }
 
+inline bool isRunning()
+{
+    return std::atomic_load_explicit(&running, std::memory_order_relaxed);
+}
+
 int main(int argc, char **argv)
 {
     CommandOptionParser cp;
@@ -178,23 +183,16 @@ int main(int argc, char **argv)
                 std::cout << "Subscription: " << channel << " " << correlationId << ":" << streamId << std::endl;
             });
 
-        context.newImageHandler([](
-            Image& image,
-            const std::string &channel,
-            std::int32_t streamId,
-            std::int32_t sessionId,
-            std::int64_t joiningPosition,
-            const std::string &sourceIdentity)
-        {
-            std::cout << "New image on " << channel << " streamId=" << streamId << " sessionId=" << sessionId;
-            std::cout << " at position=" << joiningPosition << " from " << sourceIdentity << std::endl;
-        });
-
-        context.inactiveImageHandler(
-            [](Image& image, const std::string &channel, std::int32_t streamId, std::int32_t sessionId, std::int64_t position)
+        context.availableImageHandler([](Image &image)
             {
-                std::cout << "Inactive image on " << channel << "streamId=" << streamId << " sessionId=" << sessionId;
-                std::cout << " at position=" << position << std::endl;
+                std::cout << "Available image correlationId=" << image.correlationId() << " sessionId=" << image.sessionId();
+                std::cout << " at position=" << image.position() << " from " << image.sourceIdentity() << std::endl;
+            });
+
+        context.unavailableImageHandler([](Image &image)
+            {
+                std::cout << "Unavailable image on correlationId=" << image.correlationId() << " sessionId=" << image.sessionId();
+                std::cout << " at position=" << image.position() << std::endl;
             });
 
         Aeron aeron(context);
@@ -236,7 +234,7 @@ int main(int argc, char **argv)
 
         std::thread pollThread([&]()
             {
-                while (running)
+                while (isRunning())
                 {
                     const int fragmentsRead = subscription->poll(handler, settings.fragmentCountLimit);
 
@@ -249,22 +247,25 @@ int main(int argc, char **argv)
             printingActive = true;
 
             long backPressureCount = 0;
+            BufferClaim bufferClaim;
 
             if (nullptr == rateReporterThread)
             {
                 rateReporter.reset();
             }
 
-            for (long i = 0; i < settings.numberOfMessages && running; i++)
+            for (long i = 0; i < settings.numberOfMessages && isRunning(); i++)
             {
                 const int length = lengthGenerator();
-                srcBuffer.putInt64(0, i);
 
-                while (publication->offer(srcBuffer, 0, length) < 0L)
+                while (publication->tryClaim(length, bufferClaim) < 0L)
                 {
                     backPressureCount++;
                     offerIdleStrategy.idle(0);
                 }
+
+                bufferClaim.buffer().putInt64(bufferClaim.offset(), i);
+                bufferClaim.commit();
             }
 
             if (nullptr == rateReporterThread)
@@ -275,7 +276,7 @@ int main(int argc, char **argv)
             std::cout << "Done streaming. Back pressure ratio ";
             std::cout << ((double)backPressureCount / settings.numberOfMessages) << std::endl;
 
-            if (running && settings.lingerTimeoutMs > 0)
+            if (isRunning() && settings.lingerTimeoutMs > 0)
             {
                 std::cout << "Lingering for " << settings.lingerTimeoutMs << " milliseconds." << std::endl;
                 std::this_thread::sleep_for(std::chrono::milliseconds(settings.lingerTimeoutMs));
@@ -283,7 +284,7 @@ int main(int argc, char **argv)
 
             printingActive = false;
         }
-        while (running && continuationBarrier("Execute again?"));
+        while (isRunning() && continuationBarrier("Execute again?"));
 
         running = false;
         rateReporter.halt();

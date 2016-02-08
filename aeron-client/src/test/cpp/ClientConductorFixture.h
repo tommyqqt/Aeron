@@ -43,6 +43,9 @@ using namespace std::placeholders;
 
 static const long DRIVER_TIMEOUT_MS = 10 * 1000;
 static const long RESOURCE_LINGER_TIMEOUT_MS = 5 * 1000;
+static const long INTER_SERVICE_TIMEOUT_NS = 5 * 1000 * 1000 * 1000L;
+static const long INTER_SERVICE_TIMEOUT_MS = INTER_SERVICE_TIMEOUT_NS / 1000000L;
+static const long PUBLICATION_CONNECTION_TIMEOUT_MS = 5 * 1000L;
 
 typedef std::array<std::uint8_t, MANY_TO_ONE_RING_BUFFER_LENGTH> many_to_one_ring_buffer_t;
 typedef std::array<std::uint8_t, BROADCAST_BUFFER_LENGTH> broadcast_buffer_t;
@@ -56,8 +59,8 @@ public:
 
     MOCK_METHOD4(onNewPub, void(const std::string&, std::int32_t, std::int32_t, std::int64_t));
     MOCK_METHOD3(onNewSub, void(const std::string&, std::int32_t, std::int64_t));
-    MOCK_METHOD6(onNewImage, void(Image&, const std::string&, std::int32_t, std::int32_t, std::int64_t, const std::string&));
-    MOCK_METHOD5(onInactive, void(Image&, const std::string&, std::int32_t, std::int32_t, std::int64_t));
+    MOCK_METHOD1(onNewImage, void(Image&));
+    MOCK_METHOD1(onInactive, void(Image&));
 };
 
 class ClientConductorFixture
@@ -79,15 +82,29 @@ public:
             m_counterValuesBuffer,
             std::bind(&testing::NiceMock<MockClientConductorHandlers>::onNewPub, &m_handlers, _1, _2, _3, _4),
             std::bind(&testing::NiceMock<MockClientConductorHandlers>::onNewSub, &m_handlers, _1, _2, _3),
-            std::bind(&testing::NiceMock<MockClientConductorHandlers>::onNewImage, &m_handlers, _1, _2, _3, _4, _5, _6),
-            std::bind(&testing::NiceMock<MockClientConductorHandlers>::onInactive, &m_handlers, _1, _2, _3, _4, _5),
-            [&](SourcedException& exception) { m_errorHandler(exception); },
+            std::bind(&testing::NiceMock<MockClientConductorHandlers>::onNewImage, &m_handlers, _1),
+            std::bind(&testing::NiceMock<MockClientConductorHandlers>::onInactive, &m_handlers, _1),
+            [&](std::exception& exception) { m_errorHandler(exception); },
             DRIVER_TIMEOUT_MS,
-            RESOURCE_LINGER_TIMEOUT_MS),
+            RESOURCE_LINGER_TIMEOUT_MS,
+            INTER_SERVICE_TIMEOUT_NS,
+            PUBLICATION_CONNECTION_TIMEOUT_MS),
         m_errorHandler(defaultErrorHandler)
     {
         m_toDriver.fill(0);
         m_toClients.fill(0);
+    }
+
+    // do this to not trip the interServiceTimeout
+    void doWorkUntilDriverTimeout()
+    {
+        const long startTime = m_currentTime;
+
+        while (m_currentTime <= (startTime + DRIVER_TIMEOUT_MS))
+        {
+            m_currentTime += 1000;
+            m_conductor.doWork();
+        }
     }
 
 protected:

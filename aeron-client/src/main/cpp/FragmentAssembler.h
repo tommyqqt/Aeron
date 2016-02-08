@@ -19,6 +19,7 @@
 
 #include <unordered_map>
 #include "Aeron.h"
+#include "BufferBuilder.h"
 
 namespace aeron {
 
@@ -32,7 +33,7 @@ static const std::size_t DEFAULT_FRAGMENT_ASSEMBLY_BUFFER_LENGTH = 4096;
  * buffer for reassembly before delegation.
  * <p>
  * Session based buffers will be allocated and grown as necessary based on the length of messages to be assembled.
- * When sessions go inactive see {@link on_inactive_image_t}, it is possible to free the buffer by calling
+ * When sessions go inactive see {@link on_unavailable_image_t}, it is possible to free the buffer by calling
  * {@link #deleteSessionBuffer(std::int32_t)}.
  */
 class FragmentAssembler
@@ -77,84 +78,6 @@ public:
     }
 
 private:
-    class BufferBuilder
-    {
-    public:
-        typedef BufferBuilder this_t;
-
-        BufferBuilder(std::uint32_t initialLength) :
-            m_capacity(BitUtil::findNextPowerOfTwo(initialLength)),
-            m_limit(static_cast<std::uint32_t>(DataFrameHeader::LENGTH)),
-            m_buffer(new std::uint8_t[m_capacity])
-        {
-        }
-
-        virtual ~BufferBuilder()
-        {
-        }
-
-        BufferBuilder(BufferBuilder&& builder) :
-            m_capacity(builder.m_capacity), m_limit(builder.m_limit), m_buffer(std::move(builder.m_buffer))
-        {
-        }
-
-        std::uint8_t* buffer() const
-        {
-            return &m_buffer[0];
-        }
-
-        std::uint32_t limit() const
-        {
-            return m_limit;
-        }
-
-        this_t& reset()
-        {
-            m_limit = static_cast<std::uint32_t>(DataFrameHeader::LENGTH);
-            return *this;
-        }
-
-        this_t& append(AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            ensureCapacity(static_cast<std::uint32_t>(length));
-
-            ::memcpy(&m_buffer[0] + m_limit, buffer.buffer() + offset, static_cast<std::uint32_t>(length));
-            m_limit += length;
-            return *this;
-        }
-
-    private:
-        std::uint32_t m_capacity;
-        std::uint32_t m_limit = 0;
-        std::unique_ptr<std::uint8_t[]> m_buffer;
-
-        inline static std::uint32_t findSuitableCapacity(std::uint32_t capacity, std::uint32_t requiredCapacity)
-        {
-            do
-            {
-                capacity <<= 1;
-            }
-            while (capacity < requiredCapacity);
-
-            return capacity;
-        }
-
-        void ensureCapacity(std::uint32_t additionalCapacity)
-        {
-            const std::uint32_t requiredCapacity = m_limit + additionalCapacity;
-
-            if (requiredCapacity > m_capacity)
-            {
-                const std::uint32_t newCapacity = findSuitableCapacity(m_capacity, requiredCapacity);
-                std::unique_ptr<std::uint8_t[]> newBuffer(new std::uint8_t[newCapacity]);
-
-                ::memcpy(&newBuffer[0], &m_buffer[0], m_limit);
-                m_buffer = std::move(newBuffer);
-                m_capacity = newCapacity;
-            }
-        }
-    };
-
     std::size_t m_initialBufferLength;
     fragment_handler_t m_delegate;
     std::unordered_map<std::int32_t, BufferBuilder> m_builderBySessionIdMap;

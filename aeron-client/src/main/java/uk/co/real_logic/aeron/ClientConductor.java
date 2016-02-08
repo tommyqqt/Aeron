@@ -15,6 +15,7 @@
  */
 package uk.co.real_logic.aeron;
 
+import uk.co.real_logic.aeron.exceptions.ConductorServiceTimeoutException;
 import uk.co.real_logic.aeron.exceptions.DriverTimeoutException;
 import uk.co.real_logic.aeron.exceptions.RegistrationException;
 import uk.co.real_logic.agrona.ErrorHandler;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static uk.co.real_logic.aeron.DriverListenerAdapter.MISSING_REGISTRATION_ID;
 
 /**
  * Client conductor takes responses and notifications from media driver and acts on them.
@@ -39,19 +41,22 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 class ClientConductor implements Agent, DriverListener
 {
     private static final long NO_CORRELATION_ID = -1;
-    private static final long KEEPALIVE_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(500);
     private static final long RESOURCE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
     private static final long RESOURCE_LINGER_NS = TimeUnit.SECONDS.toNanos(5);
 
+    private final long keepAliveIntervalNs;
     private final long driverTimeoutMs;
     private final long driverTimeoutNs;
+    private final long interServiceTimeoutNs;
+    private final long publicationConnectionTimeoutMs;
     private long timeOfLastKeepalive;
     private long timeOfLastCheckResources;
+    private long timeOfLastDoWork;
     private volatile boolean driverActive = true;
 
     private final EpochClock epochClock;
     private final NanoClock nanoClock;
-    private final DriverListenerAdapter driverListenerAdapter;
+    private final DriverListenerAdapter driverListener;
     private final LogBuffersFactory logBuffersFactory;
     private final ActivePublications activePublications = new ActivePublications();
     private final ActiveSubscriptions activeSubscriptions = new ActiveSubscriptions();
@@ -59,12 +64,12 @@ class ClientConductor implements Agent, DriverListener
     private final UnsafeBuffer counterValuesBuffer;
     private final DriverProxy driverProxy;
     private final ErrorHandler errorHandler;
-    private final NewImageHandler newImageHandler;
-    private final InactiveImageHandler inactiveImageHandler;
+    private final AvailableImageHandler availableImageHandler;
+    private final UnavailableImageHandler unavailableImageHandler;
 
     private RegistrationException driverException;
 
-    public ClientConductor(
+    ClientConductor(
         final EpochClock epochClock,
         final NanoClock nanoClock,
         final CopyBroadcastReceiver broadcastReceiver,
@@ -72,27 +77,34 @@ class ClientConductor implements Agent, DriverListener
         final UnsafeBuffer counterValuesBuffer,
         final DriverProxy driverProxy,
         final ErrorHandler errorHandler,
-        final NewImageHandler newImageHandler,
-        final InactiveImageHandler inactiveImageHandler,
-        final long driverTimeoutMs)
+        final AvailableImageHandler availableImageHandler,
+        final UnavailableImageHandler unavailableImageHandler,
+        final long keepAliveIntervalNs,
+        final long driverTimeoutMs,
+        final long interServiceTimeoutNs,
+        final long publicationConnectionTimeoutMs)
     {
         this.epochClock = epochClock;
         this.nanoClock = nanoClock;
         this.timeOfLastKeepalive = nanoClock.nanoTime();
         this.timeOfLastCheckResources = nanoClock.nanoTime();
+        this.timeOfLastDoWork = nanoClock.nanoTime();
         this.errorHandler = errorHandler;
         this.counterValuesBuffer = counterValuesBuffer;
         this.driverProxy = driverProxy;
         this.logBuffersFactory = logBuffersFactory;
-        this.newImageHandler = newImageHandler;
-        this.inactiveImageHandler = inactiveImageHandler;
+        this.availableImageHandler = availableImageHandler;
+        this.unavailableImageHandler = unavailableImageHandler;
+        this.keepAliveIntervalNs = keepAliveIntervalNs;
         this.driverTimeoutMs = driverTimeoutMs;
         this.driverTimeoutNs = MILLISECONDS.toNanos(driverTimeoutMs);
+        this.interServiceTimeoutNs = interServiceTimeoutNs;
+        this.publicationConnectionTimeoutMs = publicationConnectionTimeoutMs;
 
-        this.driverListenerAdapter = new DriverListenerAdapter(broadcastReceiver, this);
+        this.driverListener = new DriverListenerAdapter(broadcastReceiver, this);
     }
 
-    public void onClose()
+    public synchronized void onClose()
     {
         activePublications.close();
         activeSubscriptions.close();
@@ -109,19 +121,19 @@ class ClientConductor implements Agent, DriverListener
         return "client-conductor";
     }
 
-    public synchronized Publication addPublication(final String channel, final int streamId, final int sessionId)
+    public synchronized Publication addPublication(final String channel, final int streamId)
     {
         verifyDriverIsActive();
 
-        Publication publication = activePublications.get(channel, sessionId, streamId);
+        Publication publication = activePublications.get(channel, streamId);
         if (publication == null)
         {
-            final long correlationId = driverProxy.addPublication(channel, streamId, sessionId);
+            final long correlationId = driverProxy.addPublication(channel, streamId);
             final long timeout = nanoClock.nanoTime() + driverTimeoutNs;
 
             doWorkUntil(correlationId, timeout, channel);
 
-            publication = activePublications.get(channel, sessionId, streamId);
+            publication = activePublications.get(channel, streamId);
         }
 
         publication.incRef();
@@ -134,7 +146,7 @@ class ClientConductor implements Agent, DriverListener
         verifyDriverIsActive();
 
         final long correlationId = driverProxy.removePublication(publication.registrationId());
-        activePublications.remove(publication.channel(), publication.sessionId(), publication.streamId());
+        activePublications.remove(publication.channel(), publication.streamId());
         final long timeout = nanoClock.nanoTime() + driverTimeoutNs;
 
         doWorkUntil(correlationId, timeout, publication.channel());
@@ -184,13 +196,12 @@ class ClientConductor implements Agent, DriverListener
             logBuffersFactory.map(logFileName),
             correlationId);
 
-        activePublications.put(channel, sessionId, streamId, publication);
+        activePublications.put(channel, streamId, publication);
     }
 
-    public void onNewImage(
+    public void onAvailableImage(
         final int streamId,
         final int sessionId,
-        final long joiningPosition,
         final Long2LongHashMap subscriberPositionMap,
         final String logFileName,
         final String sourceIdentity,
@@ -204,20 +215,21 @@ class ClientConductor implements Agent, DriverListener
                 {
                     final long positionId = subscriberPositionMap.get(subscription.registrationId());
 
-                    if (DriverListenerAdapter.MISSING_REGISTRATION_ID != positionId)
+                    if (MISSING_REGISTRATION_ID != positionId)
                     {
                         final Image image = new Image(
+                            subscription,
                             sessionId,
-                            joiningPosition,
                             new UnsafeBufferPosition(counterValuesBuffer, (int)positionId),
                             logBuffersFactory.map(logFileName),
                             errorHandler,
-                            correlationId);
+                            sourceIdentity,
+                            correlationId
+                        );
 
                         subscription.addImage(image);
 
-                        newImageHandler.onNewImage(
-                            image, subscription.channel(), streamId, sessionId, joiningPosition, sourceIdentity);
+                        availableImageHandler.onAvailableImage(image);
                     }
                 }
             });
@@ -228,7 +240,7 @@ class ClientConductor implements Agent, DriverListener
         driverException = new RegistrationException(errorCode, message);
     }
 
-    public void onInactiveImage(final int streamId, final int sessionId, final long position, final long correlationId)
+    public void onUnavailableImage(final int streamId, final long correlationId)
     {
         activeSubscriptions.forEach(
             streamId,
@@ -237,20 +249,25 @@ class ClientConductor implements Agent, DriverListener
                 final Image image = subscription.removeImage(correlationId);
                 if (null != image)
                 {
-                    inactiveImageHandler.onInactiveImage(image, subscription.channel(), streamId, sessionId, position);
+                    unavailableImageHandler.onUnavailableImage(image);
                 }
             });
     }
 
     public DriverListenerAdapter driverListenerAdapter()
     {
-        return driverListenerAdapter;
+        return driverListener;
     }
 
     public void lingerResource(final ManagedResource managedResource)
     {
         managedResource.timeOfLastStateChange(nanoClock.nanoTime());
         managedResources.add(managedResource);
+    }
+
+    public boolean isPublicationConnected(final long timeOfLastSm)
+    {
+        return (epochClock.time() <= (timeOfLastSm + publicationConnectionTimeoutMs));
     }
 
     private void checkDriverHeartbeat()
@@ -282,7 +299,7 @@ class ClientConductor implements Agent, DriverListener
         try
         {
             workCount += onCheckTimeouts();
-            workCount += driverListenerAdapter.pollMessage(correlationId, expectedChannel);
+            workCount += driverListener.pollMessage(correlationId, expectedChannel);
         }
         catch (final Exception ex)
         {
@@ -300,7 +317,7 @@ class ClientConductor implements Agent, DriverListener
         {
             doWork(correlationId, expectedChannel);
 
-            if (driverListenerAdapter.lastReceivedCorrelationId() == correlationId)
+            if (driverListener.lastReceivedCorrelationId() == correlationId)
             {
                 if (null != driverException)
                 {
@@ -320,7 +337,18 @@ class ClientConductor implements Agent, DriverListener
         final long now = nanoClock.nanoTime();
         int result = 0;
 
-        if (now > (timeOfLastKeepalive + KEEPALIVE_TIMEOUT_NS))
+        if (now > (timeOfLastDoWork + interServiceTimeoutNs))
+        {
+            activePublications.close();
+            activeSubscriptions.close();
+
+            throw new ConductorServiceTimeoutException(
+                String.format("Timeout between service calls over %dns", interServiceTimeoutNs));
+        }
+
+        timeOfLastDoWork = now;
+
+        if (now > (timeOfLastKeepalive + keepAliveIntervalNs))
         {
             driverProxy.sendClientKeepalive();
             checkDriverHeartbeat();

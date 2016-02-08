@@ -57,7 +57,6 @@ public class SelectorAndTransportTest
     private final StatusMessageFlyweight statusMessage = new StatusMessageFlyweight();
 
     private final InetSocketAddress rcvRemoteAddress = new InetSocketAddress("localhost", SRC_PORT);
-    private final InetSocketAddress srcRemoteAddress = new InetSocketAddress("localhost", RCV_PORT);
 
     private final EventLogger mockTransportLogger = mock(EventLogger.class);
     private final SystemCounters mockSystemCounters = mock(SystemCounters.class);
@@ -66,9 +65,12 @@ public class SelectorAndTransportTest
     private final DataPacketDispatcher mockDispatcher = mock(DataPacketDispatcher.class);
     private final NetworkPublication mockPublication = mock(NetworkPublication.class);
 
-    private TransportPoller transportPoller;
+    private DataTransportPoller dataTransportPoller = new DataTransportPoller();
+    private ControlTransportPoller controlTransportPoller = new ControlTransportPoller();
     private SendChannelEndpoint sendChannelEndpoint;
     private ReceiveChannelEndpoint receiveChannelEndpoint;
+
+    private MediaDriver.Context context = new MediaDriver.Context();
 
     @Before
     public void setup()
@@ -76,6 +78,11 @@ public class SelectorAndTransportTest
         when(mockSystemCounters.statusMessagesReceived()).thenReturn(mockStatusMessagesReceivedCounter);
         when(mockPublication.streamId()).thenReturn(STREAM_ID);
         when(mockPublication.sessionId()).thenReturn(SESSION_ID);
+
+        context.controlLossGenerator(NO_LOSS);
+        context.dataLossGenerator(NO_LOSS);
+        context.eventLogger(mockTransportLogger);
+        context.systemCounters(mockSystemCounters);
     }
 
     @After
@@ -86,18 +93,19 @@ public class SelectorAndTransportTest
             if (null != sendChannelEndpoint)
             {
                 sendChannelEndpoint.close();
-                processLoop(transportPoller, 5);
+                processLoop(controlTransportPoller, 5);
             }
 
             if (null != receiveChannelEndpoint)
             {
                 receiveChannelEndpoint.close();
-                processLoop(transportPoller, 5);
+                processLoop(dataTransportPoller, 5);
             }
 
-            if (null != transportPoller)
+            if (null != dataTransportPoller)
             {
-                transportPoller.close();
+                dataTransportPoller.close();
+                controlTransportPoller.close();
             }
         }
         catch (final Exception ex)
@@ -109,17 +117,15 @@ public class SelectorAndTransportTest
     @Test(timeout = 1000)
     public void shouldHandleBasicSetupAndTearDown() throws Exception
     {
-        transportPoller = new TransportPoller();
-        receiveChannelEndpoint = new ReceiveChannelEndpoint(
-            RCV_DST, mockDispatcher, mockTransportLogger, mockSystemCounters, NO_LOSS);
-        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, mockTransportLogger, NO_LOSS, mockSystemCounters);
+        receiveChannelEndpoint = new ReceiveChannelEndpoint(RCV_DST, mockDispatcher, context);
+        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, context);
 
         receiveChannelEndpoint.openDatagramChannel();
-        receiveChannelEndpoint.registerForRead(transportPoller);
+        receiveChannelEndpoint.registerForRead(dataTransportPoller);
         sendChannelEndpoint.openDatagramChannel();
-        sendChannelEndpoint.registerForRead(transportPoller);
+        sendChannelEndpoint.registerForRead(controlTransportPoller);
 
-        processLoop(transportPoller, 5);
+        processLoop(dataTransportPoller, 5);
     }
 
     @Test(timeout = 1000)
@@ -140,17 +146,15 @@ public class SelectorAndTransportTest
             anyInt(),
             any(InetSocketAddress.class));
 
-        transportPoller = new TransportPoller();
-        receiveChannelEndpoint = new ReceiveChannelEndpoint(
-            RCV_DST, mockDispatcher, mockTransportLogger, mockSystemCounters, NO_LOSS);
-        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, mockTransportLogger, NO_LOSS, mockSystemCounters);
+        receiveChannelEndpoint = new ReceiveChannelEndpoint(RCV_DST, mockDispatcher, context);
+        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, context);
 
         receiveChannelEndpoint.openDatagramChannel();
-        receiveChannelEndpoint.registerForRead(transportPoller);
+        receiveChannelEndpoint.registerForRead(dataTransportPoller);
         sendChannelEndpoint.openDatagramChannel();
-        sendChannelEndpoint.registerForRead(transportPoller);
+        sendChannelEndpoint.registerForRead(controlTransportPoller);
 
-        encodeDataHeader.wrap(buffer, 0);
+        encodeDataHeader.wrap(buffer);
         encodeDataHeader
             .version(HeaderFlyweight.CURRENT_VERSION)
             .flags(DataHeaderFlyweight.BEGIN_AND_END_FLAGS)
@@ -162,11 +166,11 @@ public class SelectorAndTransportTest
             .termId(TERM_ID);
         byteBuffer.position(0).limit(FRAME_LENGTH);
 
-        processLoop(transportPoller, 5);
-        sendChannelEndpoint.sendTo(byteBuffer, srcRemoteAddress);
+        processLoop(dataTransportPoller, 5);
+        sendChannelEndpoint.send(byteBuffer);
         while (dataHeadersReceived.get() < 1)
         {
-            processLoop(transportPoller, 1);
+            processLoop(dataTransportPoller, 1);
         }
 
         assertThat(dataHeadersReceived.get(), is(1));
@@ -190,17 +194,15 @@ public class SelectorAndTransportTest
             anyInt(),
             any(InetSocketAddress.class));
 
-        transportPoller = new TransportPoller();
-        receiveChannelEndpoint = new ReceiveChannelEndpoint(
-            RCV_DST, mockDispatcher, mockTransportLogger, mockSystemCounters, NO_LOSS);
-        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, mockTransportLogger, NO_LOSS, mockSystemCounters);
+        receiveChannelEndpoint = new ReceiveChannelEndpoint(RCV_DST, mockDispatcher, context);
+        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, context);
 
         receiveChannelEndpoint.openDatagramChannel();
-        receiveChannelEndpoint.registerForRead(transportPoller);
+        receiveChannelEndpoint.registerForRead(dataTransportPoller);
         sendChannelEndpoint.openDatagramChannel();
-        sendChannelEndpoint.registerForRead(transportPoller);
+        sendChannelEndpoint.registerForRead(controlTransportPoller);
 
-        encodeDataHeader.wrap(buffer, 0);
+        encodeDataHeader.wrap(buffer);
         encodeDataHeader
             .version(HeaderFlyweight.CURRENT_VERSION)
             .flags(DataHeaderFlyweight.BEGIN_AND_END_FLAGS)
@@ -211,7 +213,8 @@ public class SelectorAndTransportTest
             .streamId(STREAM_ID)
             .termId(TERM_ID);
 
-        encodeDataHeader.wrap(buffer, BitUtil.align(FRAME_LENGTH, FrameDescriptor.FRAME_ALIGNMENT));
+        final int alignedFrameLength = BitUtil.align(FRAME_LENGTH, FrameDescriptor.FRAME_ALIGNMENT);
+        encodeDataHeader.wrap(buffer, alignedFrameLength, buffer.capacity() - alignedFrameLength);
         encodeDataHeader
             .version(HeaderFlyweight.CURRENT_VERSION)
             .flags(DataHeaderFlyweight.BEGIN_AND_END_FLAGS)
@@ -222,13 +225,13 @@ public class SelectorAndTransportTest
             .streamId(STREAM_ID)
             .termId(TERM_ID);
 
-        byteBuffer.position(0).limit(2 * BitUtil.align(FRAME_LENGTH, FrameDescriptor.FRAME_ALIGNMENT));
+        byteBuffer.position(0).limit(2 * alignedFrameLength);
 
-        processLoop(transportPoller, 5);
-        sendChannelEndpoint.sendTo(byteBuffer, srcRemoteAddress);
+        processLoop(dataTransportPoller, 5);
+        sendChannelEndpoint.send(byteBuffer);
         while (dataHeadersReceived.get() < 1)
         {
-            processLoop(transportPoller, 1);
+            processLoop(dataTransportPoller, 1);
         }
 
         assertThat(dataHeadersReceived.get(), is(1));
@@ -247,18 +250,16 @@ public class SelectorAndTransportTest
             })
             .when(mockPublication).onStatusMessage(anyInt(), anyInt(), anyInt(), any(InetSocketAddress.class));
 
-        transportPoller = new TransportPoller();
-        receiveChannelEndpoint = new ReceiveChannelEndpoint(
-            RCV_DST, mockDispatcher, mockTransportLogger, mockSystemCounters, NO_LOSS);
-        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, mockTransportLogger, NO_LOSS, mockSystemCounters);
-        sendChannelEndpoint.addToDispatcher(mockPublication);
+        receiveChannelEndpoint = new ReceiveChannelEndpoint(RCV_DST, mockDispatcher, context);
+        sendChannelEndpoint = new SendChannelEndpoint(SRC_DST, context);
+        sendChannelEndpoint.registerForSend(mockPublication);
 
         receiveChannelEndpoint.openDatagramChannel();
-        receiveChannelEndpoint.registerForRead(transportPoller);
+        receiveChannelEndpoint.registerForRead(dataTransportPoller);
         sendChannelEndpoint.openDatagramChannel();
-        sendChannelEndpoint.registerForRead(transportPoller);
+        sendChannelEndpoint.registerForRead(controlTransportPoller);
 
-        statusMessage.wrap(buffer, 0);
+        statusMessage.wrap(buffer);
         statusMessage
             .streamId(STREAM_ID)
             .sessionId(SESSION_ID)
@@ -271,18 +272,18 @@ public class SelectorAndTransportTest
             .frameLength(StatusMessageFlyweight.HEADER_LENGTH);
         byteBuffer.position(0).limit(statusMessage.frameLength());
 
-        processLoop(transportPoller, 5);
+        processLoop(dataTransportPoller, 5);
         receiveChannelEndpoint.sendTo(byteBuffer, rcvRemoteAddress);
 
         while (controlMessagesReceived.get() < 1)
         {
-            processLoop(transportPoller, 1);
+            processLoop(controlTransportPoller, 1);
         }
 
         verify(mockStatusMessagesReceivedCounter, times(1)).orderedIncrement();
     }
 
-    private void processLoop(final TransportPoller transportPoller, final int iterations) throws Exception
+    private void processLoop(final UdpTransportPoller transportPoller, final int iterations) throws Exception
     {
         for (int i = 0; i < iterations; i++)
         {

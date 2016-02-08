@@ -46,15 +46,15 @@ public final class TermScanner
 
         do
         {
-            final int frameOffset = offset + available;
-            final int frameLength = frameLengthVolatile(termBuffer, frameOffset);
+            final int termOffset = offset + available;
+            final int frameLength = frameLengthVolatile(termBuffer, termOffset);
             if (frameLength <= 0)
             {
                 break;
             }
 
             int alignedFrameLength = align(frameLength, FRAME_ALIGNMENT);
-            if (isPaddingFrame(termBuffer, frameOffset))
+            if (isPaddingFrame(termBuffer, termOffset))
             {
                 padding = alignedFrameLength - HEADER_LENGTH;
                 alignedFrameLength = HEADER_LENGTH;
@@ -69,9 +69,9 @@ public final class TermScanner
                 break;
             }
         }
-        while ((available + padding) < maxLength);
+        while (0 == padding && available < maxLength);
 
-        return scanOutcome(padding, available);
+        return pack(padding, available);
     }
 
     /**
@@ -81,7 +81,7 @@ public final class TermScanner
      * @param available value to be packed.
      * @return a long with both ints packed into it.
      */
-    public static long scanOutcome(final int padding, final int available)
+    public static long pack(final int padding, final int available)
     {
         return ((long)padding << 32) | available;
     }
@@ -89,22 +89,22 @@ public final class TermScanner
     /**
      * The number of bytes that are available to be read after a scan.
      *
-     * @param scanOutcome into which the padding value has been packed.
+     * @param result into which the padding value has been packed.
      * @return the count of bytes that are available to be read.
      */
-    public static int available(final long scanOutcome)
+    public static int available(final long result)
     {
-        return (int)scanOutcome;
+        return (int)result;
     }
 
     /**
      * The count of bytes that should be added for padding to the position on top of what is available
      *
-     * @param scanOutcome into which the padding value has been packed.
+     * @param result into which the padding value has been packed.
      * @return the count of bytes that should be added for padding to the position on top of what is available.
      */
-    public static int padding(final long scanOutcome)
+    public static int padding(final long result)
     {
-        return (int)(scanOutcome >>> 32);
+        return (int)(result >>> 32);
     }
 }

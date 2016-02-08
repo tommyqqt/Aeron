@@ -20,6 +20,8 @@
 
 #include <atomic>
 
+#include "MockAtomicBuffer.h"
+
 #include <concurrent/ringbuffer/RingBufferDescriptor.h>
 #include <concurrent/AtomicBuffer.h>
 #include <concurrent/ringbuffer/ManyToOneRingBuffer.h>
@@ -29,6 +31,7 @@
 using namespace aeron;
 using namespace aeron::concurrent::ringbuffer;
 using namespace aeron::concurrent;
+using namespace aeron::concurrent::mock;
 
 #define CAPACITY (1024)
 #define BUFFER_SZ (CAPACITY + RingBufferDescriptor::TRAILER_LENGTH)
@@ -38,8 +41,8 @@ typedef std::array<std::uint8_t, BUFFER_SZ> buffer_t;
 typedef std::array<std::uint8_t, ODD_BUFFER_SZ> odd_sized_buffer_t;
 
 const static std::int32_t MSG_TYPE_ID = 101;
-const static util::index_t HEAD_COUNTER_INDEX = 1024 + RingBufferDescriptor::HEAD_COUNTER_OFFSET;
-const static util::index_t TAIL_COUNTER_INDEX = 1024 + RingBufferDescriptor::TAIL_COUNTER_OFFSET;
+const static util::index_t HEAD_COUNTER_INDEX = 1024 + RingBufferDescriptor::HEAD_POSITION_OFFSET;
+const static util::index_t TAIL_COUNTER_INDEX = 1024 + RingBufferDescriptor::TAIL_POSITION_OFFSET;
 
 class ManyToOneRingBufferTest : public testing::Test
 {
@@ -48,7 +51,9 @@ public:
     ManyToOneRingBufferTest() :
         m_ab(&m_buffer[0],m_buffer.size()),
         m_srcAb(&m_srcBuffer[0], m_srcBuffer.size()),
-        m_ringBuffer(m_ab)
+        m_ringBuffer(m_ab),
+        m_mockAb(&m_buffer[0], m_buffer.size()),
+        m_mockRingBuffer(m_mockAb)
     {
         clear();
     }
@@ -59,6 +64,8 @@ protected:
     AtomicBuffer m_ab;
     AtomicBuffer m_srcAb;
     ManyToOneRingBuffer m_ringBuffer;
+    MockAtomicBuffer m_mockAb;
+    ManyToOneRingBuffer m_mockRingBuffer;
 
     inline void clear()
     {
@@ -232,6 +239,29 @@ TEST_F(ManyToOneRingBufferTest, shouldReadSingleMessage)
     }
 }
 
+TEST_F(ManyToOneRingBufferTest, shouldNotReadSingleMessagePartWayThroughWriting)
+{
+    util::index_t length = 8;
+    util::index_t head = 0;
+    util::index_t recordLength = length + RecordDescriptor::HEADER_LENGTH;
+    util::index_t alignedRecordLength = util::BitUtil::align(recordLength, RecordDescriptor::ALIGNMENT);
+    util::index_t endTail = alignedRecordLength;
+
+    m_ab.putInt64(TAIL_COUNTER_INDEX, endTail);
+    m_ab.putInt32(RecordDescriptor::typeOffset(0), MSG_TYPE_ID);
+    m_ab.putInt32(RecordDescriptor::lengthOffset(0), -recordLength);
+
+    int timesCalled = 0;
+    const int messagesRead = m_ringBuffer.read([&](std::int32_t, concurrent::AtomicBuffer&, util::index_t, util::index_t)
+    {
+        timesCalled++;
+    });
+
+    EXPECT_EQ(messagesRead, 0);
+    EXPECT_EQ(timesCalled, 0);
+    EXPECT_EQ(m_ab.getInt64(HEAD_COUNTER_INDEX), head);
+}
+
 TEST_F(ManyToOneRingBufferTest, shouldReadTwoMessages)
 {
     util::index_t length = 8;
@@ -299,7 +329,158 @@ TEST_F(ManyToOneRingBufferTest, shouldLimitReadOfMessages)
     EXPECT_EQ(m_ab.getInt32(RecordDescriptor::lengthOffset(alignedRecordLength)), recordLength);
 }
 
-// TODO: add test for dealing with exception from handler correctly
+TEST_F(ManyToOneRingBufferTest, shouldCopeWithExceptionFromHandler)
+{
+    util::index_t length = 8;
+    util::index_t head = 0;
+    util::index_t recordLength = length + RecordDescriptor::HEADER_LENGTH;
+    util::index_t alignedRecordLength = util::BitUtil::align(recordLength, RecordDescriptor::ALIGNMENT);
+    util::index_t tail = alignedRecordLength * 2;
+
+    m_ab.putInt64(HEAD_COUNTER_INDEX, head);
+    m_ab.putInt64(TAIL_COUNTER_INDEX, tail);
+
+    m_ab.putInt32(RecordDescriptor::typeOffset(0), MSG_TYPE_ID);
+    m_ab.putInt32(RecordDescriptor::lengthOffset(0), recordLength);
+
+    m_ab.putInt32(RecordDescriptor::typeOffset(0 + alignedRecordLength), MSG_TYPE_ID);
+    m_ab.putInt32(RecordDescriptor::lengthOffset(0 + alignedRecordLength), recordLength);
+
+    int timesCalled = 0;
+    auto handler = [&](std::int32_t, concurrent::AtomicBuffer&, util::index_t, util::index_t)
+        {
+            timesCalled++;
+            if (2 == timesCalled)
+            {
+                throw std::runtime_error("expected exception");
+            }
+        };
+
+    bool exceptionReceived = false;
+
+    try
+    {
+        m_ringBuffer.read(handler);
+    }
+    catch (std::runtime_error ignored)
+    {
+        exceptionReceived = true;
+    }
+
+    EXPECT_EQ(timesCalled, 2);
+    EXPECT_TRUE(exceptionReceived);
+    EXPECT_EQ(m_ab.getInt64(HEAD_COUNTER_INDEX), head + alignedRecordLength + alignedRecordLength);
+
+    for (int i = 0; i < RecordDescriptor::ALIGNMENT * 2; i += 4)
+    {
+        EXPECT_EQ(m_ab.getInt32(i), 0) << "buffer has not been zeroed between indexes " << i << "-" << i+3;
+    }
+}
+
+TEST_F(ManyToOneRingBufferTest, shouldNotUnblockWhenEmpty)
+{
+    util::index_t tail = RecordDescriptor::ALIGNMENT * 4;
+    util::index_t head = tail;
+
+    m_ab.putInt64(TAIL_COUNTER_INDEX, tail);
+    m_ab.putInt64(HEAD_COUNTER_INDEX, head);
+
+    EXPECT_FALSE(m_ringBuffer.unblock());
+}
+
+TEST_F(ManyToOneRingBufferTest, shouldUnblockMessageWithHeader)
+{
+    util::index_t messageLength = RecordDescriptor::ALIGNMENT * 4;
+    util::index_t head = messageLength;
+    util::index_t tail = messageLength * 2;
+
+    m_ab.putInt64(HEAD_COUNTER_INDEX, head);
+    m_ab.putInt64(TAIL_COUNTER_INDEX, tail);
+
+    m_ab.putInt32(RecordDescriptor::typeOffset(head), MSG_TYPE_ID);
+    m_ab.putInt32(RecordDescriptor::lengthOffset(head), -messageLength);
+
+    EXPECT_TRUE(m_ringBuffer.unblock());
+
+    EXPECT_EQ(m_ab.getInt32(RecordDescriptor::typeOffset(head)), RecordDescriptor::PADDING_MSG_TYPE_ID);
+    EXPECT_EQ(m_ab.getInt32(RecordDescriptor::lengthOffset(head)), messageLength);
+
+    EXPECT_EQ(m_ab.getInt64(HEAD_COUNTER_INDEX), messageLength);
+    EXPECT_EQ(m_ab.getInt64(TAIL_COUNTER_INDEX), messageLength * 2);
+}
+
+TEST_F(ManyToOneRingBufferTest, shouldUnblockGapWithZeros)
+{
+    util::index_t messageLength = RecordDescriptor::ALIGNMENT * 4;
+    util::index_t head = messageLength;
+    util::index_t tail = messageLength * 3;
+
+    m_ab.putInt64(HEAD_COUNTER_INDEX, head);
+    m_ab.putInt64(TAIL_COUNTER_INDEX, tail);
+
+    m_ab.putInt32(RecordDescriptor::lengthOffset(messageLength * 2), messageLength);
+
+    EXPECT_TRUE(m_ringBuffer.unblock());
+
+    EXPECT_EQ(m_ab.getInt32(RecordDescriptor::typeOffset(head)), RecordDescriptor::PADDING_MSG_TYPE_ID);
+    EXPECT_EQ(m_ab.getInt32(RecordDescriptor::lengthOffset(head)), messageLength);
+
+    EXPECT_EQ(m_ab.getInt64(HEAD_COUNTER_INDEX), messageLength);
+    EXPECT_EQ(m_ab.getInt64(TAIL_COUNTER_INDEX), messageLength * 3);
+}
+
+TEST_F(ManyToOneRingBufferTest, shouldNotUnblockGapWithMessageRaceOnSecondMessageIncreasingTailThenInterrupting)
+{
+    util::index_t messageLength = RecordDescriptor::ALIGNMENT * 4;
+    util::index_t head = messageLength;
+    util::index_t tail = messageLength * 3;
+
+    EXPECT_CALL(m_mockAb, getInt64Volatile(HEAD_COUNTER_INDEX))
+        .Times(1)
+        .WillRepeatedly(testing::Return(head));
+
+    EXPECT_CALL(m_mockAb, getInt64Volatile(TAIL_COUNTER_INDEX))
+        .Times(1)
+        .WillRepeatedly(testing::Return(tail));
+
+    EXPECT_CALL(m_mockAb, getInt32Volatile(testing::_))
+        .WillRepeatedly(testing::Return(0));
+
+    EXPECT_CALL(m_mockAb, getInt32Volatile(messageLength * 2))
+        .Times(1)
+        .WillOnce(testing::Return(0));
+
+    EXPECT_FALSE(m_mockRingBuffer.unblock());
+}
+
+TEST_F(ManyToOneRingBufferTest, shouldNotUnblockGapWithMessageRaceWhenScanForwardTakesAnInterrupt)
+{
+    util::index_t messageLength = RecordDescriptor::ALIGNMENT * 4;
+    util::index_t head = messageLength;
+    util::index_t tail = messageLength * 3;
+
+    EXPECT_CALL(m_mockAb, getInt64Volatile(HEAD_COUNTER_INDEX))
+        .Times(1)
+        .WillRepeatedly(testing::Return(head));
+
+    EXPECT_CALL(m_mockAb, getInt64Volatile(TAIL_COUNTER_INDEX))
+        .Times(1)
+        .WillRepeatedly(testing::Return(tail));
+
+    EXPECT_CALL(m_mockAb, getInt32Volatile(testing::_))
+        .WillRepeatedly(testing::Return(0));
+
+    EXPECT_CALL(m_mockAb, getInt32Volatile(messageLength * 2))
+        .Times(2)
+        .WillOnce(testing::Return(0))
+        .WillOnce(testing::Return(messageLength));
+
+    EXPECT_CALL(m_mockAb, getInt32Volatile(messageLength * 2 + RecordDescriptor::ALIGNMENT))
+        .Times(1)
+        .WillOnce(testing::Return(7));
+
+    EXPECT_FALSE(m_mockRingBuffer.unblock());
+}
 
 #define NUM_MESSAGES_PER_PUBLISHER (10 * 1000 * 1000)
 #define NUM_IDS_PER_THREAD (10 * 1000 * 1000)

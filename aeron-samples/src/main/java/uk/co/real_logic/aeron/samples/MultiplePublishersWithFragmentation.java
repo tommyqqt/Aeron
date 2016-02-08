@@ -33,8 +33,6 @@ public class MultiplePublishersWithFragmentation
     private static final int STREAM_ID_1 = SampleConfiguration.STREAM_ID;
     private static final int STREAM_ID_2 = SampleConfiguration.STREAM_ID + 1;
     private static final String CHANNEL = SampleConfiguration.CHANNEL;
-
-    // Allocate enough buffer space for large messages that will fragment.
     private static final UnsafeBuffer BUFFER_1 = new UnsafeBuffer(ByteBuffer.allocateDirect(10000));
     private static final UnsafeBuffer BUFFER_2 = new UnsafeBuffer(ByteBuffer.allocateDirect(9000));
 
@@ -42,13 +40,7 @@ public class MultiplePublishersWithFragmentation
     {
         System.out.println("Publishing to " + CHANNEL + " on stream Id " + STREAM_ID_1 + " and stream Id " + STREAM_ID_2);
 
-        final Aeron.Context ctx = new Aeron.Context();
-
-        // Create an Aeron instance using the default configuration set in the Context, and
-        // add two publications with two different stream IDs.
-        // The Aeron and Publication classes both implement "AutoCloseable" and will
-        // automatically clean up resources when this try block is finished
-        try (final Aeron aeron = Aeron.connect(ctx);
+        try (final Aeron aeron = Aeron.connect();
              final Publication publication1 = aeron.addPublication(CHANNEL, STREAM_ID_1);
              final Publication publication2 = aeron.addPublication(CHANNEL, STREAM_ID_2))
         {
@@ -59,7 +51,6 @@ public class MultiplePublishersWithFragmentation
             final String message2 = "Hello World! " + k;
             BUFFER_2.putBytes(0, message2.getBytes());
 
-            // Try to send 5000 messages from each publication
             while (j <= 5000 || k <= 5000)
             {
                 boolean offerStatus1 = false;
@@ -69,13 +60,11 @@ public class MultiplePublishersWithFragmentation
 
                 while (!(offerStatus1 || offerStatus2))
                 {
-                    // Try to publish the buffer for the first publication
                     if (j <= 5000)
                     {
                         result1 = publication1.offer(BUFFER_1, 0, BUFFER_1.capacity());
                         if (result1 < 0L)
                         {
-                            // Message offer failed
                             if (result1 == Publication.BACK_PRESSURED)
                             {
                                 System.out.println(" Offer failed due to back pressure for stream Id " + STREAM_ID_1);
@@ -93,7 +82,6 @@ public class MultiplePublishersWithFragmentation
                         }
                         else
                         {
-                            // Successfully sent the data; get the next buffer in the stream
                             j++;
                             offerStatus1 = true;
                             System.out.println("Successfully sent data on stream " +
@@ -101,13 +89,11 @@ public class MultiplePublishersWithFragmentation
                         }
                     }
 
-                    // Try to publish the buffer for the second publisher
                     if (k <= 5000)
                     {
                         result2 = publication2.offer(BUFFER_2, 0, BUFFER_2.capacity());
                         if (result2 < 0L)
                         {
-                            // Message offer failed
                             if (result2 == Publication.BACK_PRESSURED)
                             {
                                 System.out.println(" Offer failed because publisher is not yet " +
@@ -125,7 +111,6 @@ public class MultiplePublishersWithFragmentation
                         }
                         else
                         {
-                            // Successfully sent the data; get the next buffer in the stream
                             k++;
                             offerStatus2 = true;
                             System.out.println("Successfully sent data on stream " + STREAM_ID_2 +

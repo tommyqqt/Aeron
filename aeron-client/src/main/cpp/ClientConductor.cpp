@@ -23,7 +23,7 @@ ClientConductor::~ClientConductor()
     std::vector<std::shared_ptr<Subscription>> subscriptions;
 
     std::for_each(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn& entry)
+        [&subscriptions](SubscriptionStateDefn& entry)
         {
             subscriptions.push_back(entry.m_subscriptionCache);
             entry.m_subscriptionCache.reset();
@@ -37,24 +37,24 @@ ClientConductor::~ClientConductor()
         });
 }
 
-std::int64_t ClientConductor::addPublication(const std::string &channel, std::int32_t streamId, std::int32_t sessionId)
+std::int64_t ClientConductor::addPublication(const std::string &channel, std::int32_t streamId)
 {
     verifyDriverIsActive();
 
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
     std::int64_t id;
 
-    std::vector<PublicationStateDefn>::const_iterator it = std::find_if(m_publications.begin(), m_publications.end(),
-        [&](PublicationStateDefn &entry)
+    auto it = std::find_if(m_publications.begin(), m_publications.end(),
+        [channel, streamId](const PublicationStateDefn &entry)
         {
-            return (streamId == entry.m_streamId && sessionId == entry.m_sessionId && channel == entry.m_channel);
+            return (streamId == entry.m_streamId && channel == entry.m_channel);
         });
 
     if (it == m_publications.end())
     {
-        std::int64_t registrationId = m_driverProxy.addPublication(channel, streamId, sessionId);
+        std::int64_t registrationId = m_driverProxy.addPublication(channel, streamId);
 
-        m_publications.push_back(PublicationStateDefn(channel, registrationId, streamId, sessionId, m_epochClock()));
+        m_publications.emplace_back(channel, registrationId, streamId, m_epochClock());
         id = registrationId;
     }
     else
@@ -67,10 +67,10 @@ std::int64_t ClientConductor::addPublication(const std::string &channel, std::in
 
 std::shared_ptr<Publication> ClientConductor::findPublication(std::int64_t registrationId)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<PublicationStateDefn>::iterator it = std::find_if(m_publications.begin(), m_publications.end(),
-        [&](PublicationStateDefn &entry)
+    auto it = std::find_if(m_publications.begin(), m_publications.end(),
+        [registrationId](const PublicationStateDefn &entry)
         {
             return (registrationId == entry.m_registrationId);
         });
@@ -118,10 +118,10 @@ void ClientConductor::releasePublication(std::int64_t registrationId)
 {
     verifyDriverIsActive();
 
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<PublicationStateDefn>::iterator it = std::find_if(m_publications.begin(), m_publications.end(),
-        [&](PublicationStateDefn &entry)
+    auto it = std::find_if(m_publications.begin(), m_publications.end(),
+        [registrationId](const PublicationStateDefn &entry)
         {
             return (registrationId == entry.m_registrationId);
         });
@@ -137,21 +137,21 @@ std::int64_t ClientConductor::addSubscription(const std::string &channel, std::i
 {
     verifyDriverIsActive();
 
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
     std::int64_t registrationId = m_driverProxy.addSubscription(channel, streamId);
 
-    m_subscriptions.push_back(SubscriptionStateDefn(channel, registrationId, streamId, m_epochClock()));
+    m_subscriptions.emplace_back(channel, registrationId, streamId, m_epochClock());
 
     return registrationId;
 }
 
 std::shared_ptr<Subscription> ClientConductor::findSubscription(std::int64_t registrationId)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<SubscriptionStateDefn>::iterator it = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn &entry)
+    auto it = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
+        [registrationId](const SubscriptionStateDefn &entry)
         {
             return (registrationId == entry.m_registrationId);
         });
@@ -186,14 +186,14 @@ std::shared_ptr<Subscription> ClientConductor::findSubscription(std::int64_t reg
     return sub;
 }
 
-void ClientConductor::releaseSubscription(std::int64_t registrationId, Image * connections, int connectionsLength)
+void ClientConductor::releaseSubscription(std::int64_t registrationId, Image *images, int imagesLength)
 {
     verifyDriverIsActive();
 
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<SubscriptionStateDefn>::iterator it = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn &entry)
+    auto it = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
+        [registrationId](const SubscriptionStateDefn &entry)
         {
             return (registrationId == entry.m_registrationId);
         });
@@ -203,7 +203,7 @@ void ClientConductor::releaseSubscription(std::int64_t registrationId, Image * c
         m_driverProxy.removeSubscription((*it).m_registrationId);
         m_subscriptions.erase(it);
 
-        lingerResources(m_epochClock(), connections, connectionsLength);
+        lingerResources(m_epochClock(), images, imagesLength);
     }
 }
 
@@ -214,41 +214,46 @@ void ClientConductor::onNewPublication(
     const std::string &logFileName,
     std::int64_t registrationId)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<PublicationStateDefn>::iterator it = std::find_if(m_publications.begin(), m_publications.end(),
-        [&](PublicationStateDefn &entry)
+    auto it = std::find_if(m_publications.begin(), m_publications.end(),
+        [registrationId](const PublicationStateDefn &entry)
         {
             return (registrationId == entry.m_registrationId);
         });
 
     if (it != m_publications.end())
     {
-        (*it).m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
-        (*it).m_positionLimitCounterId = positionLimitCounterId;
-        (*it).m_buffers = std::make_shared<LogBuffers>(logFileName.c_str());
+        PublicationStateDefn& state = (*it);
 
-        m_onNewPublicationHandler((*it).m_channel, streamId, sessionId, registrationId);
+        state.m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
+        state.m_sessionId = sessionId;
+        state.m_positionLimitCounterId = positionLimitCounterId;
+        state.m_buffers = std::make_shared<LogBuffers>(logFileName.c_str());
+
+        m_onNewPublicationHandler(state.m_channel, streamId, sessionId, registrationId);
     }
 }
 
 void ClientConductor::onOperationSuccess(std::int64_t correlationId)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<SubscriptionStateDefn>::iterator subIt = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn &entry)
+    auto subIt = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
+        [correlationId](const SubscriptionStateDefn &entry)
         {
             return (correlationId == entry.m_registrationId);
         });
 
     if (subIt != m_subscriptions.end() && (*subIt).m_status == RegistrationStatus::AWAITING_MEDIA_DRIVER)
     {
-        (*subIt).m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
-        (*subIt).m_subscriptionCache =
-            std::make_shared<Subscription>(*this, (*subIt).m_registrationId, (*subIt).m_channel, (*subIt).m_streamId);
-        (*subIt).m_subscription = std::weak_ptr<Subscription>((*subIt).m_subscriptionCache);
-        m_onNewSubscpriptionHandler((*subIt).m_channel, (*subIt).m_streamId, correlationId);
+        SubscriptionStateDefn& state = (*subIt);
+
+        state.m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
+        state.m_subscriptionCache =
+            std::make_shared<Subscription>(*this, state.m_registrationId, state.m_channel, state.m_streamId);
+        state.m_subscription = std::weak_ptr<Subscription>(state.m_subscriptionCache);
+        m_onNewSubscriptionHandler(state.m_channel, state.m_streamId, correlationId);
         return;
     }
 }
@@ -258,10 +263,10 @@ void ClientConductor::onErrorResponse(
     std::int32_t errorCode,
     const std::string& errorMessage)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
-    std::vector<SubscriptionStateDefn>::iterator subIt = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn &entry)
+    auto subIt = std::find_if(m_subscriptions.begin(), m_subscriptions.end(),
+        [offendingCommandCorrelationId](const SubscriptionStateDefn &entry)
         {
             return (offendingCommandCorrelationId == entry.m_registrationId);
         });
@@ -274,8 +279,8 @@ void ClientConductor::onErrorResponse(
         return;
     }
 
-    std::vector<PublicationStateDefn>::iterator pubIt = std::find_if(m_publications.begin(), m_publications.end(),
-        [&](PublicationStateDefn &entry)
+    auto pubIt = std::find_if(m_publications.begin(), m_publications.end(),
+        [offendingCommandCorrelationId](const PublicationStateDefn &entry)
         {
             return (offendingCommandCorrelationId == entry.m_registrationId);
         });
@@ -290,20 +295,19 @@ void ClientConductor::onErrorResponse(
 }
 
 
-void ClientConductor::onNewImage(
+void ClientConductor::onAvailableImage(
     std::int32_t streamId,
     std::int32_t sessionId,
-    std::int64_t joiningPosition,
     const std::string &logFilename,
     const std::string &sourceIdentity,
     std::int32_t subscriberPositionCount,
     const ImageBuffersReadyDefn::SubscriberPosition *subscriberPositions,
     std::int64_t correlationId)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
     std::for_each(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn &entry)
+        [&](const SubscriptionStateDefn &entry)
         {
             if (streamId == entry.m_streamId)
             {
@@ -321,7 +325,13 @@ void ClientConductor::onNewImage(
                             UnsafeBufferPosition subscriberPosition(m_counterValuesBuffer, subscriberPositions[i].indicatorId);
 
                             Image image(
-                                sessionId, joiningPosition, correlationId, subscriberPosition, logBuffers);
+                                sessionId,
+                                correlationId,
+                                subscription->registrationId(),
+                                sourceIdentity,
+                                subscriberPosition,
+                                logBuffers,
+                                m_errorHandler);
 
                             Image* oldArray = subscription->addImage(image);
 
@@ -330,8 +340,7 @@ void ClientConductor::onNewImage(
                                 lingerResource(m_epochClock(), oldArray);
                             }
 
-                            m_onNewImageHandler(
-                                image, subscription->channel(), streamId, sessionId, joiningPosition, sourceIdentity);
+                            m_onAvailableImageHandler(image);
                             break;
                         }
                     }
@@ -340,17 +349,15 @@ void ClientConductor::onNewImage(
         });
 }
 
-void ClientConductor::onInactiveImage(
+void ClientConductor::onUnavailableImage(
     std::int32_t streamId,
-    std::int32_t sessionId,
-    std::int64_t position,
     std::int64_t correlationId)
 {
     const long now = m_epochClock();
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
     std::for_each(m_subscriptions.begin(), m_subscriptions.end(),
-        [&](SubscriptionStateDefn &entry)
+        [&](const SubscriptionStateDefn &entry)
         {
             if (streamId == entry.m_streamId)
             {
@@ -366,67 +373,100 @@ void ClientConductor::onInactiveImage(
                     {
                         lingerResource(now, oldArray[index].logBuffers());
                         lingerResource(now, oldArray);
-                        m_onInactiveImageHandler(oldArray[index], subscription->channel(), streamId, sessionId, position);
+                        m_onUnavailableImageHandler(oldArray[index]);
                     }
                 }
             }
         });
 }
 
+void ClientConductor::onInterServiceTimeout(long now)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
+
+    std::for_each(m_publications.begin(), m_publications.end(),
+        [&](PublicationStateDefn& entry)
+        {
+            std::shared_ptr<Publication> pub = entry.m_publication.lock();
+
+            if (nullptr != pub)
+            {
+                pub->close();
+            }
+        });
+
+    m_publications.clear();
+
+    std::for_each(m_subscriptions.begin(), m_subscriptions.end(),
+        [&](SubscriptionStateDefn& entry)
+        {
+            std::shared_ptr<Subscription> sub = entry.m_subscription.lock();
+
+            if (nullptr != sub)
+            {
+                std::pair<Image *, int> removeResult = sub->removeAndCloseAllImages();
+                Image* images = removeResult.first;
+                const int imagesLength = removeResult.second;
+
+                lingerResources(now, images, imagesLength);
+            }
+        });
+
+    m_subscriptions.clear();
+}
+
 void ClientConductor::onCheckManagedResources(long now)
 {
-    std::lock_guard<std::mutex> lock(m_adminLock);
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
     // erase-remove idiom
 
     // check LogBuffers
-    std::vector<LogBuffersLingerDefn>::iterator logIt =
-        std::remove_if(m_lingeringLogBuffers.begin(), m_lingeringLogBuffers.end(),
-            [&](LogBuffersLingerDefn& entry)
-            {
-                return (now > (entry.m_timeOfLastStatusChange + m_resourceLingerTimeoutMs));
-            });
+    auto logIt = std::remove_if(m_lingeringLogBuffers.begin(), m_lingeringLogBuffers.end(),
+        [now, this](const LogBuffersLingerDefn& entry)
+        {
+            return (now > (entry.m_timeOfLastStatusChange + m_resourceLingerTimeoutMs));
+        });
 
     m_lingeringLogBuffers.erase(logIt, m_lingeringLogBuffers.end());
 
     // check old arrays
-    std::vector<ImageArrayLingerDefn>::iterator arrayIt =
-        std::remove_if(m_lingeringImageArrays.begin(), m_lingeringImageArrays.end(),
-            [&](ImageArrayLingerDefn & entry)
+    auto arrayIt = std::remove_if(m_lingeringImageArrays.begin(), m_lingeringImageArrays.end(),
+        [now, this](ImageArrayLingerDefn & entry)
+        {
+            if (now > (entry.m_timeOfLastStatusChange + m_resourceLingerTimeoutMs))
             {
-                if (now > (entry.m_timeOfLastStatusChange + m_resourceLingerTimeoutMs))
-                {
-                    delete[] entry.m_array;
-                    entry.m_array = nullptr;
-                    return true;
-                }
+                delete[] entry.m_array;
+                entry.m_array = nullptr;
+                return true;
+            }
 
-                return false;
-            });
+            return false;
+        });
 
     m_lingeringImageArrays.erase(arrayIt, m_lingeringImageArrays.end());
 }
 
 void ClientConductor::lingerResource(long now, Image* array)
 {
-    m_lingeringImageArrays.push_back(ImageArrayLingerDefn(now, array));
+    m_lingeringImageArrays.emplace_back(now, array);
 }
 
 void ClientConductor::lingerResource(long now, std::shared_ptr<LogBuffers> logBuffers)
 {
-    m_lingeringLogBuffers.push_back(LogBuffersLingerDefn(now, logBuffers));
+    m_lingeringLogBuffers.emplace_back(now, logBuffers);
 }
 
-void ClientConductor::lingerResources(long now, Image* image, int connectionsLength)
+void ClientConductor::lingerResources(long now, Image* images, int imagesLength)
 {
-    for (int i = 0; i < connectionsLength; i++)
+    for (int i = 0; i < imagesLength; i++)
     {
-        lingerResource(now, image[i].logBuffers());
+        lingerResource(now, images[i].logBuffers());
     }
 
-    if (nullptr != image)
+    if (nullptr != images)
     {
-        lingerResource(now, image);
+        lingerResource(now, images);
     }
 }
 

@@ -15,7 +15,8 @@
  */
 package uk.co.real_logic.aeron.command;
 
-import static java.nio.ByteOrder.LITTLE_ENDIAN;
+import java.nio.ByteOrder;
+
 import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_INT;
 import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_LONG;
 
@@ -51,7 +52,7 @@ public class SubscriptionMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public long registrationCorrelationId()
     {
-        return buffer().getLong(offset() + REGISTRATION_CORRELATION_ID_OFFSET, LITTLE_ENDIAN);
+        return buffer.getLong(offset + REGISTRATION_CORRELATION_ID_OFFSET);
     }
 
     /**
@@ -62,7 +63,7 @@ public class SubscriptionMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public SubscriptionMessageFlyweight registrationCorrelationId(final long correlationId)
     {
-        buffer().putLong(offset() + REGISTRATION_CORRELATION_ID_OFFSET, correlationId, LITTLE_ENDIAN);
+        buffer.putLong(offset + REGISTRATION_CORRELATION_ID_OFFSET, correlationId);
 
         return this;
     }
@@ -74,7 +75,7 @@ public class SubscriptionMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public int streamId()
     {
-        return buffer().getInt(offset() + STREAM_ID_OFFSET, LITTLE_ENDIAN);
+        return buffer.getInt(offset + STREAM_ID_OFFSET);
     }
 
     /**
@@ -85,7 +86,7 @@ public class SubscriptionMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public SubscriptionMessageFlyweight streamId(final int streamId)
     {
-        buffer().putInt(offset() + STREAM_ID_OFFSET, streamId, LITTLE_ENDIAN);
+        buffer.putInt(offset + STREAM_ID_OFFSET, streamId);
 
         return this;
     }
@@ -97,7 +98,7 @@ public class SubscriptionMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public String channel()
     {
-        return stringGet(offset() + CHANNEL_OFFSET, LITTLE_ENDIAN);
+        return buffer.getStringUtf8(offset + CHANNEL_OFFSET, ByteOrder.nativeOrder());
     }
 
     /**
@@ -108,7 +109,7 @@ public class SubscriptionMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public SubscriptionMessageFlyweight channel(final String channel)
     {
-        lengthOfChannel = stringPut(offset() + CHANNEL_OFFSET, channel, LITTLE_ENDIAN);
+        lengthOfChannel = buffer.putStringUtf8(offset + CHANNEL_OFFSET, channel, ByteOrder.nativeOrder());
 
         return this;
     }

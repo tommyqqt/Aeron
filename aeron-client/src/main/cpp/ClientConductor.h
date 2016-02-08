@@ -21,6 +21,7 @@
 #include <mutex>
 #include <concurrent/logbuffer/TermReader.h>
 #include <concurrent/status/UnsafeBufferPosition.h>
+#include <util/LangUtil.h>
 #include "Publication.h"
 #include "Subscription.h"
 #include "DriverProxy.h"
@@ -51,24 +52,29 @@ public:
         AtomicBuffer& counterValuesBuffer,
         const on_new_publication_t& newPublicationHandler,
         const on_new_subscription_t& newSubscriptionHandler,
-        const on_new_image_t& newImageHandler,
-        const on_inactive_image_t& inactiveImageHandler,
+        const on_available_image_t & newImageHandler,
+        const on_unavailable_image_t & inactiveImageHandler,
         const exception_handler_t& errorHandler,
         long driverTimeoutMs,
-        long resourceLingerTimeoutMs) :
+        long resourceLingerTimeoutMs,
+        long interServiceTimeoutNs,
+        long publicationConnectionTimeoutMs) :
         m_driverProxy(driverProxy),
         m_driverListenerAdapter(broadcastReceiver, *this),
         m_counterValuesBuffer(counterValuesBuffer),
         m_onNewPublicationHandler(newPublicationHandler),
-        m_onNewSubscpriptionHandler(newSubscriptionHandler),
-        m_onNewImageHandler(newImageHandler),
-        m_onInactiveImageHandler(inactiveImageHandler),
+        m_onNewSubscriptionHandler(newSubscriptionHandler),
+        m_onAvailableImageHandler(newImageHandler),
+        m_onUnavailableImageHandler(inactiveImageHandler),
         m_errorHandler(errorHandler),
         m_epochClock(epochClock),
         m_timeOfLastKeepalive(epochClock()),
         m_timeOfLastCheckManagedResources(epochClock()),
+        m_timeOfLastDoWork(epochClock()),
         m_driverTimeoutMs(driverTimeoutMs),
         m_resourceLingerTimeoutMs(resourceLingerTimeoutMs),
+        m_interServiceTimeoutMs(interServiceTimeoutNs / 1000000),
+        m_publicationConnectionTimeoutMs(publicationConnectionTimeoutMs),
         m_driverActive(true)
     {
     }
@@ -89,13 +95,13 @@ public:
     {
     }
 
-    std::int64_t addPublication(const std::string& channel, std::int32_t streamId, std::int32_t sessionId);
+    std::int64_t addPublication(const std::string& channel, std::int32_t streamId);
     std::shared_ptr<Publication> findPublication(std::int64_t registrationId);
     void releasePublication(std::int64_t registrationId);
 
     std::int64_t addSubscription(const std::string& channel, std::int32_t streamId);
     std::shared_ptr<Subscription> findSubscription(std::int64_t registrationId);
-    void releaseSubscription(std::int64_t registrationId, Image * connections, int connectionsLength);
+    void releaseSubscription(std::int64_t registrationId, Image *images, int imagesLength);
 
     void onNewPublication(
         std::int32_t streamId,
@@ -111,31 +117,35 @@ public:
         std::int32_t errorCode,
         const std::string& errorMessage);
 
-    void onNewImage(
+    void onAvailableImage(
         std::int32_t streamId,
         std::int32_t sessionId,
-        std::int64_t joiningPosition,
         const std::string &logFilename,
         const std::string &sourceIdentity,
         std::int32_t subscriberPositionCount,
         const ImageBuffersReadyDefn::SubscriberPosition *subscriberPositions,
         std::int64_t correlationId);
 
-    void onInactiveImage(
+    void onUnavailableImage(
         std::int32_t streamId,
-        std::int32_t sessionId,
-        std::int64_t position,
         std::int64_t correlationId);
+
+    void onInterServiceTimeout(long now);
+
+    inline bool isPublicationConnected(std::int64_t timeOfLastSm)
+    {
+        return (m_epochClock() <= (timeOfLastSm + m_publicationConnectionTimeoutMs));
+    }
 
 protected:
     void onCheckManagedResources(long now);
 
     void lingerResource(long now, Image * array);
     void lingerResource(long now, std::shared_ptr<LogBuffers> logBuffers);
-    void lingerResources(long now, Image *image, int connectionsLength);
+    void lingerResources(long now, Image *images, int connectionsLength);
 
 private:
-    enum RegistrationStatus
+    enum class RegistrationStatus
     {
         AWAITING_MEDIA_DRIVER, REGISTERED_MEDIA_DRIVER, ERRORED_MEDIA_DRIVER
     };
@@ -145,7 +155,7 @@ private:
         std::string m_channel;
         std::int64_t m_registrationId;
         std::int32_t m_streamId;
-        std::int32_t m_sessionId;
+        std::int32_t m_sessionId = -1;
         std::int32_t m_positionLimitCounterId = -1;
         long m_timeOfRegistration;
         RegistrationStatus m_status = RegistrationStatus::AWAITING_MEDIA_DRIVER;
@@ -155,8 +165,8 @@ private:
         std::weak_ptr<Publication> m_publication;
 
         PublicationStateDefn(
-            const std::string& channel, std::int64_t registrationId, std::int32_t streamId, std::int32_t sessionId, long now) :
-            m_channel(channel), m_registrationId(registrationId), m_streamId(streamId), m_sessionId(sessionId), m_timeOfRegistration(now)
+            const std::string& channel, std::int64_t registrationId, std::int32_t streamId, long now) :
+            m_channel(channel), m_registrationId(registrationId), m_streamId(streamId), m_timeOfRegistration(now)
         {
         }
     };
@@ -202,7 +212,7 @@ private:
         }
     };
 
-    std::mutex m_adminLock;
+    std::recursive_mutex m_adminLock;
 
     std::vector<PublicationStateDefn> m_publications;
     std::vector<SubscriptionStateDefn> m_subscriptions;
@@ -216,16 +226,19 @@ private:
     AtomicBuffer& m_counterValuesBuffer;
 
     on_new_publication_t m_onNewPublicationHandler;
-    on_new_subscription_t m_onNewSubscpriptionHandler;
-    on_new_image_t m_onNewImageHandler;
-    on_inactive_image_t m_onInactiveImageHandler;
+    on_new_subscription_t m_onNewSubscriptionHandler;
+    on_available_image_t m_onAvailableImageHandler;
+    on_unavailable_image_t m_onUnavailableImageHandler;
     exception_handler_t m_errorHandler;
 
     epoch_clock_t m_epochClock;
     long m_timeOfLastKeepalive;
     long m_timeOfLastCheckManagedResources;
+    long m_timeOfLastDoWork;
     long m_driverTimeoutMs;
     long m_resourceLingerTimeoutMs;
+    long m_interServiceTimeoutMs;
+    long m_publicationConnectionTimeoutMs;
 
     std::atomic<bool> m_driverActive;
 
@@ -235,6 +248,17 @@ private:
 
         const long now = m_epochClock();
         int result = 0;
+
+        if (now > (m_timeOfLastDoWork + m_interServiceTimeoutMs))
+        {
+            onInterServiceTimeout(now);
+
+            ConductorServiceTimeoutException exception(
+                strPrintf("Timeout between service calls over %d ms", m_interServiceTimeoutMs), SOURCEINFO);
+            m_errorHandler(exception);
+        }
+
+        m_timeOfLastDoWork = now;
 
         if (now > (m_timeOfLastKeepalive + KEEPALIVE_TIMEOUT_MS))
         {

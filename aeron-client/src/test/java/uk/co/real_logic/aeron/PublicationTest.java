@@ -26,7 +26,9 @@ import uk.co.real_logic.agrona.concurrent.status.ReadablePosition;
 import java.nio.ByteBuffer;
 
 import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.*;
 import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
 
@@ -46,16 +48,17 @@ public class PublicationTest
     private final UnsafeBuffer[] termMetaDataBuffers = new UnsafeBuffer[PARTITION_COUNT];
     private final UnsafeBuffer[] buffers = new UnsafeBuffer[(PARTITION_COUNT * 2) + 1];
 
+    private final ClientConductor conductor = mock(ClientConductor.class);
+    private final LogBuffers logBuffers = mock(LogBuffers.class);
+    private final ReadablePosition publicationLimit = mock(ReadablePosition.class);
     private Publication publication;
-    private ClientConductor conductor = mock(ClientConductor.class);
-    private LogBuffers logBuffers = mock(LogBuffers.class);
 
     @Before
     public void setUp()
     {
-        final ReadablePosition limit = mock(ReadablePosition.class);
-        when(limit.getVolatile()).thenReturn(2L * SEND_BUFFER_CAPACITY);
+        when(publicationLimit.getVolatile()).thenReturn(2L * SEND_BUFFER_CAPACITY);
         when(logBuffers.atomicBuffers()).thenReturn(buffers);
+        when(logBuffers.termLength()).thenReturn(TERM_MIN_LENGTH);
 
         initialTermId(logMetaDataBuffer, TERM_ID_1);
 
@@ -74,33 +77,49 @@ public class PublicationTest
             CHANNEL,
             STREAM_ID_1,
             SESSION_ID_1,
-            limit,
+            publicationLimit,
             logBuffers,
             CORRELATION_ID);
 
         publication.incRef();
+
+        initialiseTailWithTermId(termMetaDataBuffers[0], TERM_ID_1);
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldEnsureThePublicationIsOpenBeforeReadingPosition()
     {
         publication.close();
-        publication.position();
+        assertThat(publication.position(), is(Publication.CLOSED));
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldEnsureThePublicationIsOpenBeforeOffer()
     {
         publication.close();
-        publication.offer(atomicSendBuffer);
+        assertTrue(publication.isClosed());
+        assertThat(publication.offer(atomicSendBuffer), is(Publication.CLOSED));
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void shouldEnsureThePublicationIsOpenBeforeClaim()
     {
         publication.close();
         final BufferClaim bufferClaim = new BufferClaim();
-        publication.tryClaim(SEND_BUFFER_CAPACITY, bufferClaim);
+        assertThat(publication.tryClaim(SEND_BUFFER_CAPACITY, bufferClaim), is(Publication.CLOSED));
+    }
+
+    @Test
+    public void shouldReportThatPublicationHasNotBeenConnectedYet()
+    {
+        when(publicationLimit.getVolatile()).thenReturn(0L);
+        assertFalse(publication.hasBeenConnected());
+    }
+
+    @Test
+    public void shouldReportThatPublicationHasBeenConnectedYet()
+    {
+        assertTrue(publication.hasBeenConnected());
     }
 
     @Test

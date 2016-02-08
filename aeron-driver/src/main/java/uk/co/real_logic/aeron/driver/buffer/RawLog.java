@@ -15,6 +15,7 @@
  */
 package uk.co.real_logic.aeron.driver.buffer;
 
+import uk.co.real_logic.aeron.logbuffer.LogBufferPartition;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
 import java.nio.ByteBuffer;
@@ -27,18 +28,25 @@ import java.util.stream.Stream;
 public interface RawLog extends AutoCloseable
 {
     /**
-     * A {@link Stream} of the {@link RawLogPartition} buffers.
+     * The length of each term in bytes.
      *
-     * @return a {@link Stream} of the {@link RawLogPartition} buffers.
+     * @return the length of each term in bytes.
      */
-    Stream<? extends RawLogPartition> stream();
+    int termLength();
 
     /**
-     * An array of the {@link RawLogPartition} buffers.
+     * A {@link Stream} of the {@link LogBufferPartition} buffers.
      *
-     * @return an array of the {@link RawLogPartition} buffers.
+     * @return a {@link Stream} of the {@link LogBufferPartition} buffers.
      */
-    RawLogPartition[] partitions();
+    Stream<? extends LogBufferPartition> stream();
+
+    /**
+     * An array of the {@link LogBufferPartition} buffers.
+     *
+     * @return an array of the {@link LogBufferPartition} buffers.
+     */
+    LogBufferPartition[] partitions();
 
     /**
      * The meta data storage for the overall log.

@@ -16,6 +16,7 @@
 package uk.co.real_logic.aeron;
 
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Test;
 import org.junit.experimental.theories.DataPoint;
 import org.junit.experimental.theories.Theories;
@@ -23,11 +24,13 @@ import org.junit.experimental.theories.Theory;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
+import uk.co.real_logic.aeron.driver.DebugReceiveChannelEndpointSupplier;
+import uk.co.real_logic.aeron.driver.DebugSendChannelEndpointSupplier;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.aeron.logbuffer.FileBlockHandler;
 import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
 import uk.co.real_logic.aeron.logbuffer.Header;
-import uk.co.real_logic.aeron.driver.MediaDriver;
-import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.BitUtil;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
@@ -35,6 +38,7 @@ import java.nio.channels.FileChannel;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.*;
@@ -49,13 +53,15 @@ import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_INT;
 public class PubAndSubTest
 {
     @DataPoint
-    public static final String UNICAST_URI = "udp://localhost:54325";
+    public static final String UNICAST_URI = "aeron:udp?remote=localhost:54325";
 
     @DataPoint
-    public static final String MULTICAST_URI = "udp://localhost@224.20.30.39:54326";
+    public static final String MULTICAST_URI = "aeron:udp?group=224.20.30.39:54326|interface=localhost";
+
+    @DataPoint
+    public static final String IPC_URI = "aeron:ipc";
 
     private static final int STREAM_ID = 1;
-    private static final int SESSION_ID = 2;
     private static final ThreadingMode THREADING_MODE = ThreadingMode.SHARED;
 
     private final MediaDriver.Context context = new MediaDriver.Context();
@@ -79,7 +85,7 @@ public class PubAndSubTest
         driver = MediaDriver.launch(context);
         publishingClient = Aeron.connect(publishingAeronContext);
         subscribingClient = Aeron.connect(subscribingAeronContext);
-        publication = publishingClient.addPublication(channel, STREAM_ID, SESSION_ID);
+        publication = publishingClient.addPublication(channel, STREAM_ID);
         subscription = subscribingClient.addSubscription(channel, STREAM_ID);
     }
 
@@ -96,9 +102,20 @@ public class PubAndSubTest
             subscription.close();
         }
 
-        subscribingClient.close();
-        publishingClient.close();
-        driver.close();
+        if (null != subscribingClient)
+        {
+            subscribingClient.close();
+        }
+
+        if (null != publishingClient)
+        {
+            publishingClient.close();
+        }
+
+        if (null != driver)
+        {
+            driver.close();
+        }
 
         context.deleteAeronDirectory();
     }
@@ -164,7 +181,7 @@ public class PubAndSubTest
             channelArgumentCaptor.capture(),
             eq(expectedOffset),
             eq(expectedLength),
-            eq(SESSION_ID),
+            anyInt(),
             anyInt());
 
         assertTrue("File Channel is closed", channelArgumentCaptor.getValue().isOpen());
@@ -189,7 +206,7 @@ public class PubAndSubTest
         final int messageLength = (termBufferLength / numMessagesInTermBuffer) - HEADER_LENGTH;
         final int numMessagesToSend = numMessagesInTermBuffer + 1;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 
@@ -230,7 +247,7 @@ public class PubAndSubTest
             termBufferLengthMinusPaddingHeader - (num1kMessagesInTermBuffer * 1024) - HEADER_LENGTH;
         final int messageLength = 1024 - HEADER_LENGTH;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 
@@ -313,11 +330,15 @@ public class PubAndSubTest
         final int messageLength = (termBufferLength / numMessagesInTermBuffer) - HEADER_LENGTH;
         final int numMessagesToSend = 2 * numMessagesInTermBuffer;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
         context.dataLossRate(0.10);                // 10% data loss
         context.dataLossSeed(0xdeadbeefL);         // predictable seed
+        context.sendChannelEndpointSupplier(new DebugSendChannelEndpointSupplier());
+        context.receiveChannelEndpointSupplier(new DebugReceiveChannelEndpointSupplier());
 
         launch(channel);
+
+        Assume.assumeThat(channel, not(IPC_URI));
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
@@ -356,11 +377,15 @@ public class PubAndSubTest
         final int numBatches = 4;
         final int numMessagesPerBatch = numMessagesToSend / numBatches;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
         context.dataLossRate(0.10);                // 10% data loss
         context.dataLossSeed(0xcafebabeL);         // predictable seed
+        context.sendChannelEndpointSupplier(new DebugSendChannelEndpointSupplier());
+        context.receiveChannelEndpointSupplier(new DebugReceiveChannelEndpointSupplier());
 
         launch(channel);
+
+        Assume.assumeThat(channel, not(IPC_URI));
 
         for (int i = 0; i < numBatches; i++)
         {
@@ -402,7 +427,7 @@ public class PubAndSubTest
         final int messageLength = (termBufferLength / numMessagesInTermBuffer) - HEADER_LENGTH;
         final int numMessagesToSend = numMessagesInTermBuffer + 1;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 
@@ -465,7 +490,7 @@ public class PubAndSubTest
         final int messageLength = 1032 - HEADER_LENGTH;
         final int numMessagesToSend = 64;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 
@@ -511,7 +536,7 @@ public class PubAndSubTest
         final int numBatchesPerTerm = 4;
         final int numMessagesPerBatch = numMessagesToSend / numBatchesPerTerm;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 
@@ -558,7 +583,7 @@ public class PubAndSubTest
         final int maxFails = 10000;
         int messagesSent = 0;
 
-        context.termBufferLength(termBufferLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 
@@ -614,9 +639,9 @@ public class PubAndSubTest
         final CountDownLatch newImageLatch = new CountDownLatch(1);
         final int stage[] = { 1 };
 
-        context.termBufferLength(termBufferLength);
-        subscribingAeronContext.newImageHandler(
-            (image, channelStr, streamId, sessionId, position, info) ->
+        context.publicationTermBufferLength(termBufferLength);
+        subscribingAeronContext.availableImageHandler(
+            (image) ->
             {
                 if (2 == stage[0])
                 {
@@ -689,10 +714,12 @@ public class PubAndSubTest
         final int numMessagesToSend = 2;
         final int numFramesToExpect = numMessagesToSend * numFragmentsPerMessage;
 
-        context.termBufferLength(termBufferLength)
+        context.publicationTermBufferLength(termBufferLength)
             .mtuLength(mtuLength);
 
         launch(channel);
+
+        Assume.assumeThat(channel, not(IPC_URI));
 
         for (int i = 0; i < numMessagesToSend; i++)
         {

@@ -16,8 +16,7 @@
 package uk.co.real_logic.aeron.driver;
 
 import uk.co.real_logic.aeron.driver.cmd.ReceiverCmd;
-import uk.co.real_logic.aeron.driver.media.ReceiveChannelEndpoint;
-import uk.co.real_logic.aeron.driver.media.TransportPoller;
+import uk.co.real_logic.aeron.driver.media.*;
 import uk.co.real_logic.agrona.concurrent.Agent;
 import uk.co.real_logic.agrona.concurrent.AtomicCounter;
 import uk.co.real_logic.agrona.concurrent.NanoClock;
@@ -32,17 +31,17 @@ import java.util.function.Consumer;
 public class Receiver implements Agent, Consumer<ReceiverCmd>
 {
     private final long statusMessageTimeout;
-    private final TransportPoller transportPoller;
+    private final DataTransportPoller dataTransportPoller;
     private final OneToOneConcurrentArrayQueue<ReceiverCmd> commandQueue;
     private final AtomicCounter totalBytesReceived;
     private final NanoClock clock;
-    private final ArrayList<NetworkedImage> images = new ArrayList<>();
+    private final ArrayList<PublicationImage> publicationImages = new ArrayList<>();
     private final ArrayList<PendingSetupMessageFromSource> pendingSetupMessages = new ArrayList<>();
 
     public Receiver(final MediaDriver.Context ctx)
     {
         statusMessageTimeout = ctx.statusMessageTimeout();
-        transportPoller = ctx.receiverNioSelector();
+        dataTransportPoller = ctx.receiverTransportPoller();
         commandQueue = ctx.receiverCommandQueue();
         totalBytesReceived = ctx.systemCounters().bytesReceived();
         clock = ctx.nanoClock();
@@ -56,16 +55,16 @@ public class Receiver implements Agent, Consumer<ReceiverCmd>
     public int doWork() throws Exception
     {
         int workCount = commandQueue.drain(this);
-        final int bytesReceived = transportPoller.pollTransports();
+        final int bytesReceived = dataTransportPoller.pollTransports();
 
         final long now = clock.nanoTime();
-        for (int i = images.size() - 1; i >= 0; i--)
+        for (int i = publicationImages.size() - 1; i >= 0; i--)
         {
-            final NetworkedImage image = images.get(i);
-            if (!image.checkForActivity(now, Configuration.IMAGE_LIVENESS_TIMEOUT_NS))
+            final PublicationImage image = publicationImages.get(i);
+            if (!image.checkForActivity(now))
             {
                 image.removeFromDispatcher();
-                images.remove(i);
+                publicationImages.remove(i);
             }
             else
             {
@@ -98,23 +97,28 @@ public class Receiver implements Agent, Consumer<ReceiverCmd>
         channelEndpoint.dispatcher().removeSubscription(streamId);
     }
 
-    public void onNewImage(final ReceiveChannelEndpoint channelEndpoint, final NetworkedImage image)
+    public void onNewPublicationImage(final ReceiveChannelEndpoint channelEndpoint, final PublicationImage image)
     {
-        images.add(image);
-        channelEndpoint.dispatcher().addImage(image);
+        publicationImages.add(image);
+        channelEndpoint.dispatcher().addPublicationImage(image);
     }
 
     public void onRegisterReceiveChannelEndpoint(final ReceiveChannelEndpoint channelEndpoint)
     {
         channelEndpoint.openChannel();
-        channelEndpoint.registerForRead(transportPoller);
-        transportPoller.selectNowWithoutProcessing();
+        channelEndpoint.registerForRead(dataTransportPoller);
+        dataTransportPoller.selectNowWithoutProcessing();
     }
 
     public void onCloseReceiveChannelEndpoint(final ReceiveChannelEndpoint channelEndpoint)
     {
         channelEndpoint.close();
-        transportPoller.selectNowWithoutProcessing();
+        dataTransportPoller.selectNowWithoutProcessing();
+    }
+
+    public void onRemoveCoolDown(final ReceiveChannelEndpoint channelEndpoint, final int sessionId, final int streamId)
+    {
+        channelEndpoint.dispatcher().removeCoolDown(sessionId, streamId);
     }
 
     public void accept(final ReceiverCmd cmd)

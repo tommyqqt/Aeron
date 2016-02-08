@@ -30,27 +30,22 @@ import static uk.co.real_logic.aeron.driver.event.EventCode.*;
  */
 public class EventLogger
 {
-    private static final ThreadLocal<MutableDirectBuffer> ENCODING_BUFFER = ThreadLocal.withInitial(
-        () -> new UnsafeBuffer(ByteBuffer.allocateDirect(EventConfiguration.MAX_EVENT_LENGTH)));
+    public static final long ENABLED_EVENT_CODES = EventConfiguration.getEnabledEventCodes();
 
-    private static final long ENABLED_EVENT_CODES = EventConfiguration.getEnabledEventCodes();
-
-    private static final boolean IS_FRAME_IN_ENABLED =
+    public static final boolean IS_FRAME_IN_ENABLED =
         (ENABLED_EVENT_CODES & FRAME_IN.tagBit()) == FRAME_IN.tagBit();
 
-    private static final boolean IS_FRAME_IN_DROPPED_ENABLED =
+    public static final boolean IS_FRAME_IN_DROPPED_ENABLED =
         (ENABLED_EVENT_CODES & FRAME_IN_DROPPED.tagBit()) == FRAME_IN_DROPPED.tagBit();
 
-    private static final boolean IS_FRAME_OUT_ENABLED =
+    public static final boolean IS_FRAME_OUT_ENABLED =
         (ENABLED_EVENT_CODES & FRAME_OUT.tagBit()) == FRAME_OUT.tagBit();
 
-    /**
-     *  The index in the stack trace of the method that called logException().
-     *
-     *  NB: stack[0] is Thread.currentThread().getStackTrace() and
-     *  stack[1] is logException().
-     */
-    private static final int INVOKING_METHOD_INDEX = 2;
+    public static final boolean IS_FRAME_LOGGING_ENABLED =
+        IS_FRAME_IN_ENABLED || IS_FRAME_IN_DROPPED_ENABLED || IS_FRAME_OUT_ENABLED;
+
+    private static final ThreadLocal<MutableDirectBuffer> ENCODING_BUFFER = ThreadLocal.withInitial(
+        () -> new UnsafeBuffer(ByteBuffer.allocateDirect(EventConfiguration.MAX_EVENT_LENGTH)));
 
     private final ManyToOneRingBuffer ringBuffer;
 
@@ -71,7 +66,7 @@ public class EventLogger
         if (isEnabled(code, ENABLED_EVENT_CODES))
         {
             final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
-            final int encodedLength = EventCodec.encode(encodedBuffer, buffer, offset, length);
+            final int encodedLength = EventEncoder.encode(encodedBuffer, buffer, offset, length);
 
             ringBuffer.write(code.id(), encodedBuffer, 0, encodedLength);
         }
@@ -94,7 +89,7 @@ public class EventLogger
         if (IS_FRAME_IN_ENABLED)
         {
             final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
-            final int encodedLength = EventCodec.encode(encodedBuffer, buffer, offset, length, dstAddress);
+            final int encodedLength = EventEncoder.encode(encodedBuffer, buffer, offset, length, dstAddress);
 
             ringBuffer.write(FRAME_IN.id(), encodedBuffer, 0, encodedLength);
         }
@@ -109,21 +104,19 @@ public class EventLogger
         if (IS_FRAME_IN_DROPPED_ENABLED)
         {
             final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
-            final int encodedLength = EventCodec.encode(encodedBuffer, buffer, offset, length, dstAddress);
+            final int encodedLength = EventEncoder.encode(encodedBuffer, buffer, offset, length, dstAddress);
 
             ringBuffer.write(FRAME_IN_DROPPED.id(), encodedBuffer, 0, encodedLength);
         }
     }
 
-    public void logFrameOut(
-        final ByteBuffer buffer,
-        final InetSocketAddress dstAddress)
+    public void logFrameOut(final ByteBuffer buffer, final InetSocketAddress dstAddress)
     {
         if (IS_FRAME_OUT_ENABLED)
         {
             final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
             final int encodedLength =
-                EventCodec.encode(encodedBuffer, buffer, buffer.position(), buffer.remaining(), dstAddress);
+                EventEncoder.encode(encodedBuffer, buffer, buffer.position(), buffer.remaining(), dstAddress);
 
             ringBuffer.write(FRAME_OUT.id(), encodedBuffer, 0, encodedLength);
         }
@@ -161,30 +154,14 @@ public class EventLogger
         }
     }
 
-    public void logInvocation()
-    {
-        if (isEnabled(INVOCATION, ENABLED_EVENT_CODES))
-        {
-            final StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-
-            final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
-            final int encodedLength = EventCodec.encode(encodedBuffer, stack[INVOKING_METHOD_INDEX]);
-
-            ringBuffer.write(INVOCATION.id(), encodedBuffer, 0, encodedLength);
-        }
-    }
-
     public void logException(final Throwable ex)
     {
         if (isEnabled(EXCEPTION, ENABLED_EVENT_CODES))
         {
             final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
-            final int encodedLength = EventCodec.encode(encodedBuffer, ex);
+            final int encodedLength = EventEncoder.encode(encodedBuffer, ex);
 
-            while (!ringBuffer.write(EXCEPTION.id(), encodedBuffer, 0, encodedLength))
-            {
-                Thread.yield();
-            }
+            ringBuffer.write(EXCEPTION.id(), encodedBuffer, 0, encodedLength);
         }
         else
         {
@@ -195,7 +172,7 @@ public class EventLogger
     private void logString(final EventCode code, final String value)
     {
         final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
-        final int encodingLength = EventCodec.encode(encodedBuffer, value);
+        final int encodingLength = EventEncoder.encode(encodedBuffer, value);
         ringBuffer.write(code.id(), encodedBuffer, 0, encodingLength);
     }
 

@@ -17,7 +17,6 @@ package uk.co.real_logic.aeron;
 
 import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
 import uk.co.real_logic.aeron.logbuffer.Header;
-import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
 import uk.co.real_logic.agrona.DirectBuffer;
 import uk.co.real_logic.agrona.collections.Int2ObjectHashMap;
 
@@ -33,7 +32,7 @@ import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.*;
  * buffer for reassembly before delegation.
  * <p>
  * Session based buffers will be allocated and grown as necessary based on the length of messages to be assembled.
- * When sessions go inactive see {@link InactiveImageHandler}, it is possible to free the buffer by calling
+ * When sessions go inactive see {@link UnavailableImageHandler}, it is possible to free the buffer by calling
  * {@link #freeSessionBuffer(int)}.
  */
 public class FragmentAssembler implements FragmentHandler
@@ -83,7 +82,7 @@ public class FragmentAssembler implements FragmentHandler
         }
         else
         {
-            if ((flags & BEGIN_FRAG) == BEGIN_FRAG)
+            if ((flags & BEGIN_FRAG_FLAG) == BEGIN_FRAG_FLAG)
             {
                 final BufferBuilder builder = builderBySessionIdMap.computeIfAbsent(header.sessionId(), builderFunc);
                 builder.reset().append(buffer, offset, length);
@@ -95,7 +94,7 @@ public class FragmentAssembler implements FragmentHandler
                 {
                     builder.append(buffer, offset, length);
 
-                    if ((flags & END_FRAG) == END_FRAG)
+                    if ((flags & END_FRAG_FLAG) == END_FRAG_FLAG)
                     {
                         final int msgLength = builder.limit();
                         delegate.onFragment(builder.buffer(), 0, msgLength, assemblyHeader.reset(header, msgLength));
@@ -116,36 +115,5 @@ public class FragmentAssembler implements FragmentHandler
     public boolean freeSessionBuffer(final int sessionId)
     {
         return null != builderBySessionIdMap.remove(sessionId);
-    }
-
-    private static class AssemblyHeader extends Header
-    {
-        private int frameLength;
-
-        public AssemblyHeader reset(final Header base, final int msgLength)
-        {
-            positionBitsToShift(base.positionBitsToShift());
-            initialTermId(base.initialTermId());
-            offset(base.offset());
-            buffer(base.buffer());
-            frameLength = msgLength + DataHeaderFlyweight.HEADER_LENGTH;
-
-            return this;
-        }
-
-        public int frameLength()
-        {
-            return frameLength;
-        }
-
-        public byte flags()
-        {
-            return (byte)(super.flags() | UNFRAGMENTED);
-        }
-
-        public int termOffset()
-        {
-            return offset() - (frameLength - super.frameLength());
-        }
     }
 }

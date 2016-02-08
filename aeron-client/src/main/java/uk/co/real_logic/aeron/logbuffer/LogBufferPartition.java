@@ -21,7 +21,7 @@ import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
 import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.TERM_TAIL_COUNTER_OFFSET;
 
 /**
- * Base log buffer implementation containing common functionality for dealing with fragment terms.
+ * Log buffer implementation containing common functionality for dealing with log partition terms.
  */
 public class LogBufferPartition
 {
@@ -30,11 +30,6 @@ public class LogBufferPartition
 
     public LogBufferPartition(final UnsafeBuffer termBuffer, final UnsafeBuffer metaDataBuffer)
     {
-        checkTermLength(termBuffer.capacity());
-        checkMetaDataBuffer(metaDataBuffer);
-        termBuffer.verifyAlignment();
-        metaDataBuffer.verifyAlignment();
-
         this.termBuffer = termBuffer;
         this.metaDataBuffer = metaDataBuffer;
     }
@@ -65,9 +60,7 @@ public class LogBufferPartition
     public void clean()
     {
         termBuffer.setMemory(0, termBuffer.capacity(), (byte)0);
-
-        metaDataBuffer.putInt(TERM_TAIL_COUNTER_OFFSET, 0);
-        metaDataBuffer.putIntOrdered(TERM_STATUS_OFFSET, CLEAN);
+        metaDataBuffer.putInt(TERM_STATUS_OFFSET, CLEAN);
     }
 
     /**
@@ -96,28 +89,42 @@ public class LogBufferPartition
      *
      * @return the current tail value.
      */
-    public int tailVolatile()
+    public int tailOffsetVolatile()
     {
-        return Math.min(metaDataBuffer.getIntVolatile(TERM_TAIL_COUNTER_OFFSET), termBuffer.capacity());
+        final long tail = metaDataBuffer.getLongVolatile(TERM_TAIL_COUNTER_OFFSET) & 0xFFFF_FFFFL;
+
+        return (int)Math.min(tail, (long)termBuffer.capacity());
     }
 
     /**
-     * Get the raw value current tail value in a volatile memory ordering fashion.
+     * Get the raw value for the tail containing both termId and offset.
      *
-     * @return the current tail value.
+     * @return the raw value for the tail containing both termId and offset.
      */
-    public int rawTailVolatile()
+    public long rawTailVolatile()
     {
-        return metaDataBuffer.getIntVolatile(TERM_TAIL_COUNTER_OFFSET);
+        return metaDataBuffer.getLongVolatile(TERM_TAIL_COUNTER_OFFSET);
     }
 
     /**
-     * Get the current tail value.
+     * Set the value of the term id into the tail counter.
      *
-     * @return the current tail value.
+     * @param termId for the tail counter
      */
-    public int tail()
+    public void termId(final int termId)
     {
-        return Math.min(metaDataBuffer.getInt(TERM_TAIL_COUNTER_OFFSET), termBuffer.capacity());
+        metaDataBuffer.putLong(TERM_TAIL_COUNTER_OFFSET, ((long)termId) << 32);
+    }
+
+    /**
+     * Get the value of the term id into the tail counter.
+     *
+     * @return the current term id.
+     */
+    public int termId()
+    {
+        final long rawTail = metaDataBuffer.getLong(TERM_TAIL_COUNTER_OFFSET);
+
+        return (int)(rawTail >>> 32);
     }
 }

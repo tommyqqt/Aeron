@@ -35,6 +35,7 @@ import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
  */
 public class LogBuffers implements AutoCloseable
 {
+    private final int termLength;
     private final FileChannel fileChannel;
     private final UnsafeBuffer[] atomicBuffers = new UnsafeBuffer[(PARTITION_COUNT * 2) + 1];
     private final MappedByteBuffer[] mappedByteBuffers;
@@ -49,7 +50,9 @@ public class LogBuffers implements AutoCloseable
             final int termLength = computeTermLength(logLength);
 
             checkTermLength(termLength);
+            this.termLength = termLength;
 
+            // if log length exceeds MAX_INT we need multiple mapped buffers, (see FileChannel.map doc).
             if (logLength < Integer.MAX_VALUE)
             {
                 final MappedByteBuffer mappedBuffer = fileChannel.map(READ_WRITE, 0, logLength);
@@ -114,11 +117,16 @@ public class LogBuffers implements AutoCloseable
 
     public void close()
     {
-        CloseHelper.quietClose(fileChannel);
+        CloseHelper.close(fileChannel);
 
         for (final MappedByteBuffer buffer : mappedByteBuffers)
         {
             IoUtil.unmap(buffer);
         }
+    }
+
+    public int termLength()
+    {
+        return termLength;
     }
 }

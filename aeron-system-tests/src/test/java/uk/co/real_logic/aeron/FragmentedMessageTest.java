@@ -21,26 +21,26 @@ import org.junit.experimental.theories.Theories;
 import org.junit.experimental.theories.Theory;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
-import uk.co.real_logic.aeron.logbuffer.FrameDescriptor;
-import uk.co.real_logic.aeron.logbuffer.Header;
 import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.aeron.driver.ThreadingMode;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.logbuffer.Header;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.*;
+import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.UNFRAGMENTED;
 
 @RunWith(Theories.class)
 public class FragmentedMessageTest
 {
     @DataPoint
-    public static final String UNICAST_URI = "udp://localhost:54325";
+    public static final String UNICAST_CHANNEL = "aeron:udp?remote=localhost:54325";
 
     @DataPoint
-    public static final String MULTICAST_URI = "udp://localhost@224.20.30.39:54326";
+    public static final String MULTICAST_CHANNEL = "aeron:udp?group=224.20.30.39:54326|interface=localhost";
 
     @DataPoint
     public static final ThreadingMode SHARED = ThreadingMode.SHARED;
@@ -66,9 +66,9 @@ public class FragmentedMessageTest
         final FragmentAssembler adapter = new FragmentAssembler(mockFragmentHandler);
 
         try (final MediaDriver ignore = MediaDriver.launch(ctx);
-             final Aeron client = Aeron.connect(new Aeron.Context());
-             final Publication publication = client.addPublication(channel, STREAM_ID);
-             final Subscription subscription = client.addSubscription(channel, STREAM_ID))
+             final Aeron aeron = Aeron.connect();
+             final Publication publication = aeron.addPublication(channel, STREAM_ID);
+             final Subscription subscription = aeron.addSubscription(channel, STREAM_ID))
         {
             final UnsafeBuffer srcBuffer = new UnsafeBuffer(new byte[ctx.mtuLength() * 4]);
             final int offset = 0;
@@ -104,7 +104,7 @@ public class FragmentedMessageTest
                 assertThat("same at i=" + i, capturedBuffer.getByte(i), is(srcBuffer.getByte(i)));
             }
 
-            assertThat(headerArg.getValue().flags(), is(FrameDescriptor.UNFRAGMENTED));
+            assertThat(headerArg.getValue().flags(), is(UNFRAGMENTED));
         }
         finally
         {

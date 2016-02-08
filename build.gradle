@@ -13,16 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 plugins {
     id 'java'
-    id 'com.github.johnrengelman.shadow' version '1.2.1'
+    id 'com.github.johnrengelman.shadow' version '1.2.2'
 }
 
 defaultTasks 'clean', 'build', 'shadowJar', 'install'
 
 def aeronGroup = 'uk.co.real-logic'
-def aeronVersion = '0.1.1-SNAPSHOT'
+def aeronVersion = '0.9.3-SNAPSHOT'
 
 group = aeronGroup
 version = aeronVersion
@@ -32,11 +31,59 @@ ext {
     group = aeronGroup
     version = aeronVersion
 
-    if (!project.hasProperty('ossrhUsername'))
+    if (!project.hasProperty('ossrhUsername')) {
         ossrhUsername = ''
+    }
 
-    if (!project.hasProperty('ossrhPassword'))
+    if (!project.hasProperty('ossrhPassword')) {
         ossrhPassword = ''
+    }
+}
+
+def projectPom = {
+    name = 'Aeron'
+    packaging = 'pom'
+    // optionally artifactId can be defined here
+    description = 'Efficient reliable UDP unicast, multicast, and IPC transport protocol.'
+    url = 'https://github.com/real-logic/Aeron'
+
+    scm {
+        connection = 'scm:git:https://github.com/real-logic/Aeron.git'
+        developerConnection = 'scm:git:https://github.com/real-logic/Aeron.git'
+        url = 'https://github.com/real-logic/Aeron.git'
+    }
+
+    licenses {
+        license {
+            name = 'The Apache License, Version 2.0'
+            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+        }
+    }
+
+    developers {
+        developer {
+            id = 'tmontgomery'
+            name = 'Todd L. Montgomery'
+            email = 'tmont@nard.net'
+            url = 'https://github.com/tmontgomery'
+        }
+        developer {
+            id = 'mjpt777'
+            name = 'Martin Thompson'
+            email = 'mjpt777@gmail.com'
+            url = 'https://github.com/mjpt777'
+        }
+        developer {
+            id = 'RichardWarburton'
+            name = 'Richard Warburton'
+            email = 'richard.warburton@gmail.com'
+            url = 'https://github.com/RichardWarburton'
+        }
+    }
+}
+
+configurations {
+    shadow
 }
 
 subprojects {
@@ -45,6 +92,7 @@ subprojects {
     apply plugin: 'checkstyle'
     apply plugin: 'signing'
     apply plugin: 'com.github.johnrengelman.shadow'
+    apply plugin: 'eclipse'
 
     group = aeronGroup
     version = aeronVersion
@@ -59,17 +107,23 @@ subprojects {
     repositories {
         mavenCentral()
         mavenLocal()
+        maven {
+            url "http://sevntu-checkstyle.github.com/sevntu.checkstyle/maven2"
+        }
     }
 
     dependencies {
-        testCompile 'org.hamcrest:hamcrest-all:1.3',
-                'junit:junit:4.12',
-                'org.mockito:mockito-all:1.10.19'
+        checkstyle "com.github.sevntu.checkstyle:sevntu-checks:1.17.1"
+
+        testCompile(
+            'org.hamcrest:hamcrest-all:1.3',
+            'junit:junit:4.12',
+            'org.mockito:mockito-all:1.10.19')
     }
 
     checkstyle {
         configFile = new File(rootDir, 'config/checkstyle/checkstyle.xml')
-        toolVersion = 6.7
+        toolVersion = "6.14.1"
     }
 
     test {
@@ -80,7 +134,9 @@ subprojects {
             exceptionFormat = 'full'
             afterSuite { desc, result ->
                 if (!desc.parent) {
-                    println "Results: ${result.resultType} (${result.testCount} tests, ${result.successfulTestCount} successes, ${result.failedTestCount} failures, ${result.skippedTestCount} skipped)"
+                    println("Results: ${result.resultType}" +
+                        " (${result.testCount} tests, ${result.successfulTestCount} successes, " +
+                            "${result.failedTestCount} failures, ${result.skippedTestCount} skipped)")
                 }
             }
         }
@@ -109,12 +165,21 @@ subprojects {
     signing {
         required { isReleasedVersion && gradle.taskGraph.hasTask("uploadArchives") }
         sign configurations.archives
+        sign configurations.shadow
+    }
+}
+
+project(':aeron-client') {
+    dependencies {
+        compile 'uk.co.real-logic:Agrona:0.4.11'
     }
 
     uploadArchives {
         repositories {
             mavenDeployer {
-                beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+                beforeDeployment {
+                    MavenDeployment deployment -> signing.signPom(deployment)
+                }
 
                 repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
                     authentication(userName: ossrhUsername, password: ossrhPassword)
@@ -124,49 +189,24 @@ subprojects {
                     authentication(userName: ossrhUsername, password: ossrhPassword)
                 }
 
-                pom.project {
-                    name = 'Aeron'
-                    packaging = 'pom'
-                    // optionally artifactId can be defined here
-                    description = 'Efficient reliable unicast and multicast transport protocol.'
-                    url = 'https://github.com/real-logic/Aeron'
-
-                    scm {
-                        connection = 'scm:git:https://github.com/real-logic/Aeron.git'
-                        developerConnection = 'scm:git:https://github.com/real-logic/Aeron.git'
-                        url = 'https://github.com/real-logic/Aeron.git'
-                    }
-
-                    licenses {
-                        license {
-                            name = 'The Apache License, Version 2.0'
-                            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
-                        }
-                    }
-
-                    developers {
-                        developer {
-                            id = 'tmontgomery'
-                            name = 'Todd L. Montgomery'
-                            email = 'tmont@nard.net'
-                            url = 'https://github.com/tmontgomery'
-                        }
-                        developer {
-                            id = 'mjpt777'
-                            name = 'Martin Thompson'
-                            email = 'mjpt777@gmail.com'
-                            url = 'https://github.com/mjpt777'
-                        }
-                        developer {
-                            id = 'RichardWarburton'
-                            name = 'Richard Warburton'
-                            email = 'richard.warburton@gmail.com'
-                            url = 'https://github.com/RichardWarburton'
-                        }
-                    }
-                }
+                pom.project(projectPom)
             }
         }
+    }
+
+    task sourcesJar(type: Jar) {
+        classifier = 'sources'
+        from sourceSets.main.allSource
+    }
+
+    task javadocJar(type: Jar, dependsOn: javadoc) {
+        classifier = 'javadoc'
+        from javadoc.destinationDir
+    }
+
+    artifacts {
+        archives sourcesJar
+        archives javadocJar
     }
 }
 
@@ -188,6 +228,26 @@ project(':aeron-driver') {
         systemProperties(System.properties)
     }
 
+    uploadArchives {
+        repositories {
+            mavenDeployer {
+                beforeDeployment {
+                    MavenDeployment deployment -> signing.signPom(deployment)
+                }
+
+                repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                pom.project(projectPom)
+            }
+        }
+    }
+
     task sourcesJar(type: Jar) {
         classifier = 'sources'
         from sourceSets.main.allSource
@@ -199,7 +259,8 @@ project(':aeron-driver') {
     }
 
     artifacts {
-        archives sourcesJar, javadocJar
+        archives sourcesJar
+        archives javadocJar
     }
 
     build.doLast {
@@ -207,38 +268,37 @@ project(':aeron-driver') {
     }
 }
 
-project(':aeron-client') {
-    dependencies {
-        compile 'uk.co.real-logic:Agrona:0.4'
-    }
-
-    task sourcesJar(type: Jar) {
-        classifier = 'sources'
-        from sourceSets.main.allSource
-    }
-
-    task javadocJar(type: Jar, dependsOn: javadoc) {
-        classifier = 'javadoc'
-        from javadoc.destinationDir
-    }
-
-    artifacts {
-        archives sourcesJar, javadocJar
-    }
-
-}
-
 project(':aeron-samples') {
     apply plugin: 'com.github.johnrengelman.shadow'
 
     dependencies {
-        compile project(':aeron-client'), project(':aeron-driver'), 'org.hdrhistogram:HdrHistogram:2.1.4'
+        compile project(':aeron-client'), project(':aeron-driver'), 'org.hdrhistogram:HdrHistogram:2.1.8'
     }
 
     shadowJar {
         archiveName = 'samples.jar'
     }
 
+    uploadArchives {
+        repositories {
+            mavenDeployer {
+                beforeDeployment {
+                    MavenDeployment deployment -> signing.signPom(deployment)
+                }
+
+                repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                pom.project(projectPom)
+            }
+        }
+    }
+
     task sourcesJar(type: Jar) {
         classifier = 'sources'
         from sourceSets.main.allSource
@@ -250,9 +310,9 @@ project(':aeron-samples') {
     }
 
     artifacts {
-        archives sourcesJar, javadocJar
+        archives sourcesJar
+        archives javadocJar
     }
-
 }
 
 project(':aeron-system-tests') {
@@ -263,6 +323,26 @@ project(':aeron-system-tests') {
 
     test {
         systemProperties('aeron.event.log': System.properties['aeron.event.log'])
+    }
+
+    uploadArchives {
+        repositories {
+            mavenDeployer {
+                beforeDeployment {
+                    MavenDeployment deployment -> signing.signPom(deployment)
+                }
+
+                repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                pom.project(projectPom)
+            }
+        }
     }
 
     task sourcesJar(type: Jar) {
@@ -276,36 +356,9 @@ project(':aeron-system-tests') {
     }
 
     artifacts {
-        archives sourcesJar, javadocJar
+        archives sourcesJar
+        archives javadocJar
     }
-}
-
-project(':aeron-tools') {
-    apply plugin: 'com.github.johnrengelman.shadow'
-
-    dependencies {
-        compile project(':aeron-client'), project(':aeron-driver'), project(':aeron-samples')
-        compile 'commons-cli:commons-cli:1.2'
-    }
-
-    shadowJar {
-        archiveName = 'tools.jar'
-    }
-
-    task sourcesJar(type: Jar) {
-        classifier = 'sources'
-        from sourceSets.main.allSource
-    }
-
-    task javadocJar(type: Jar, dependsOn: javadoc) {
-        classifier = 'javadoc'
-        from javadoc.destinationDir
-    }
-
-    artifacts {
-        archives sourcesJar, javadocJar
-    }
-
 }
 
 project(':aeron-all') {
@@ -313,6 +366,48 @@ project(':aeron-all') {
 
     dependencies {
         compile project(':aeron-client'), project(':aeron-driver')
+    }
+
+    uploadArchives {
+        repositories {
+            mavenDeployer {
+                beforeDeployment {
+                    MavenDeployment deployment -> signing.signPom(deployment)
+                }
+
+                repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                pom.project(projectPom)
+            }
+        }
+    }
+
+    uploadShadow {
+        repositories {
+            mavenDeployer {
+                beforeDeployment {
+                    MavenDeployment deployment -> signing.signPom(deployment)
+                }
+
+                repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                    authentication(userName: ossrhUsername, password: ossrhPassword)
+                }
+
+                pom.project(projectPom)
+            }
+        }
+
+        mustRunAfter 'uploadArchives'
     }
 
     task sourcesJar(type: Jar) {
@@ -332,10 +427,15 @@ project(':aeron-all') {
     }
 
     artifacts {
-        archives sourcesJar, javadocJar
+        archives sourcesJar
+        archives javadocJar
     }
 }
 
+task uploadToMavenCentral {
+    dependsOn 'aeron-client:uploadArchives', 'aeron-driver:uploadArchives', 'aeron-samples:uploadArchives',
+            'aeron-system-tests:uploadArchives', 'aeron-all:uploadArchives', 'aeron-all:uploadShadow'
+}
 task wrapper(type: Wrapper) {
-    gradleVersion = '2.4'
+    gradleVersion = '2.10'
 }

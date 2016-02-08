@@ -15,77 +15,91 @@
  */
 package uk.co.real_logic.aeron.driver.media;
 
-import uk.co.real_logic.aeron.driver.event.EventLogger;
 import uk.co.real_logic.aeron.driver.*;
 import uk.co.real_logic.aeron.driver.exceptions.ConfigurationException;
 import uk.co.real_logic.aeron.protocol.*;
+import uk.co.real_logic.agrona.LangUtil;
 import uk.co.real_logic.agrona.collections.Int2ObjectHashMap;
 import uk.co.real_logic.agrona.collections.MutableInteger;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 
 import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.frameType;
-import static uk.co.real_logic.aeron.protocol.HeaderFlyweight.HDR_TYPE_DATA;
-import static uk.co.real_logic.aeron.protocol.HeaderFlyweight.HDR_TYPE_PAD;
-import static uk.co.real_logic.aeron.protocol.HeaderFlyweight.HDR_TYPE_SETUP;
+import static uk.co.real_logic.aeron.protocol.HeaderFlyweight.*;
 
 /**
- * Aggregator of multiple subscriptions onto a single transport session for processing of data frames.
+ * Aggregator of multiple subscriptions onto a single transport session for receiving of data and setup frames
+ * plus sending status and NAK frames.
  */
 public class ReceiveChannelEndpoint extends UdpChannelTransport
 {
     private final DataPacketDispatcher dispatcher;
     private final SystemCounters systemCounters;
 
-    private final Int2ObjectHashMap<MutableInteger> refCountByStreamIdMap = new Int2ObjectHashMap<>();
-
-    private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight();
-    private final SetupFlyweight setupHeader = new SetupFlyweight();
-
     private final ByteBuffer smBuffer = ByteBuffer.allocateDirect(StatusMessageFlyweight.HEADER_LENGTH);
+    private final StatusMessageFlyweight smHeader = new StatusMessageFlyweight(smBuffer);
     private final ByteBuffer nakBuffer = ByteBuffer.allocateDirect(NakFlyweight.HEADER_LENGTH);
-    private final StatusMessageFlyweight smHeader = new StatusMessageFlyweight();
-    private final NakFlyweight nakHeader = new NakFlyweight();
+    private final NakFlyweight nakHeader = new NakFlyweight(nakBuffer);
+
+    private final SetupFlyweight setupHeader;
+    private final DataHeaderFlyweight dataHeader;
+    private final Int2ObjectHashMap<MutableInteger> refCountByStreamIdMap = new Int2ObjectHashMap<>();
 
     private volatile boolean isClosed = false;
 
     public ReceiveChannelEndpoint(
         final UdpChannel udpChannel,
         final DataPacketDispatcher dispatcher,
-        final EventLogger logger,
-        final SystemCounters systemCounters,
-        final LossGenerator lossGenerator)
+        final MediaDriver.Context context)
     {
         super(
             udpChannel,
             udpChannel.remoteData(),
             udpChannel.remoteData(),
             null,
-            lossGenerator,
-            logger);
+            context.eventLogger());
 
-        smHeader.wrap(smBuffer, 0);
         smHeader
             .version(HeaderFlyweight.CURRENT_VERSION)
-            .flags((byte)0)
             .headerType(HeaderFlyweight.HDR_TYPE_SM)
             .frameLength(StatusMessageFlyweight.HEADER_LENGTH);
 
-        nakHeader.wrap(nakBuffer, 0);
         nakHeader
             .version(HeaderFlyweight.CURRENT_VERSION)
-            .flags((byte)0)
             .headerType(HeaderFlyweight.HDR_TYPE_NAK)
             .frameLength(NakFlyweight.HEADER_LENGTH);
 
-        dataHeader.wrap(receiveBuffer(), 0);
-        setupHeader.wrap(receiveBuffer(), 0);
+        dataHeader = new DataHeaderFlyweight(receiveBuffer);
+        setupHeader = new SetupFlyweight(receiveBuffer);
 
         this.dispatcher = dispatcher;
-        this.systemCounters = systemCounters;
+        this.systemCounters = context.systemCounters();
+    }
+
+    /**
+     * Send contents of {@link java.nio.ByteBuffer} to remote address
+     *
+     * @param buffer        to send
+     * @param remoteAddress to send to
+     * @return number of bytes sent
+     */
+    public int sendTo(final ByteBuffer buffer, final InetSocketAddress remoteAddress)
+    {
+        int bytesSent = 0;
+        try
+        {
+            bytesSent = sendDatagramChannel.send(buffer, remoteAddress);
+        }
+        catch (final IOException ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
+
+        return bytesSent;
     }
 
     public String originalUriString()
@@ -159,10 +173,9 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         return dispatcher.onDataPacket(this, header, buffer, length, srcAddress);
     }
 
-    public void onSetupMessage(
-        final SetupFlyweight header, final UnsafeBuffer buffer, final int length, final InetSocketAddress srcAddress)
+    public void onSetupMessage(final SetupFlyweight header, final UnsafeBuffer buffer, final InetSocketAddress srcAddress)
     {
-        dispatcher.onSetupMessage(this, header, buffer, length, srcAddress);
+        dispatcher.onSetupMessage(this, header, buffer, srcAddress);
     }
 
     public void sendSetupElicitingStatusMessage(final InetSocketAddress controlAddress, final int sessionId, final int streamId)
@@ -177,8 +190,10 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         if (windowMaxLength > soRcvbuf)
         {
             throw new ConfigurationException(String.format(
-                "Max Window length greater than socket SO_RCVBUF: windowMaxLength=%d, SO_RCVBUF=%d",
-                windowMaxLength, soRcvbuf));
+                "Max Window length greater than socket SO_RCVBUF, increase %s to match window: windowMaxLength=%d, SO_RCVBUF=%d",
+                Configuration.INITIAL_WINDOW_LENGTH_PROP_NAME,
+                windowMaxLength,
+                soRcvbuf));
         }
     }
 
@@ -189,16 +204,20 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         if (senderMtuLength > soRcvbuf)
         {
             throw new ConfigurationException(String.format(
-                "Sender MTU greater than socket SO_RCVBUF: senderMtuLength=%d, SO_RCVBUF=%d",
-                senderMtuLength, soRcvbuf));
+                "Sender MTU greater than socket SO_RCVBUF, increase %s to match MTU: senderMtuLength=%d, SO_RCVBUF=%d",
+                Configuration.SOCKET_RCVBUF_LENGTH_PROP_NAME,
+                senderMtuLength,
+                soRcvbuf));
         }
 
         final int capacity = receiveBufferCapacity();
         if (senderMtuLength > capacity)
         {
             throw new ConfigurationException(String.format(
-                "Sender MTU greater than receive buffer capacity: senderMtuLength=%d, capacity=%d",
-                senderMtuLength, capacity));
+                "Sender MTU greater than receive buffer capacity, increase %s to match MTU: senderMtuLength=%d, capacity=%d",
+                Configuration.RECEIVE_BUFFER_LENGTH_PROP_NAME,
+                senderMtuLength,
+                capacity));
         }
     }
 
@@ -256,6 +275,24 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         }
     }
 
+    public int pollForData()
+    {
+        int bytesReceived = 0;
+        final InetSocketAddress srcAddress = receive();
+
+        if (null != srcAddress)
+        {
+            final int length = receiveByteBuffer.position();
+
+            if (isValidFrame(receiveBuffer, length))
+            {
+                bytesReceived = dispatch(receiveBuffer, length, srcAddress);
+            }
+        }
+
+        return bytesReceived;
+    }
+
     protected int dispatch(final UnsafeBuffer buffer, final int length, final InetSocketAddress srcAddress)
     {
         int bytesReceived = 0;
@@ -267,7 +304,7 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
                 break;
 
             case HDR_TYPE_SETUP:
-                dispatcher.onSetupMessage(this, setupHeader, buffer, length, srcAddress);
+                dispatcher.onSetupMessage(this, setupHeader, buffer, srcAddress);
                 break;
         }
 

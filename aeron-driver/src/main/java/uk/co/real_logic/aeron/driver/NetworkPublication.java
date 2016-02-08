@@ -17,10 +17,13 @@ package uk.co.real_logic.aeron.driver;
 
 import uk.co.real_logic.aeron.driver.buffer.RawLog;
 import uk.co.real_logic.aeron.driver.media.SendChannelEndpoint;
+import uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor;
 import uk.co.real_logic.aeron.logbuffer.LogBufferPartition;
+import uk.co.real_logic.aeron.logbuffer.LogBufferUnblocker;
 import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
 import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
 import uk.co.real_logic.aeron.protocol.SetupFlyweight;
+import uk.co.real_logic.agrona.concurrent.EpochClock;
 import uk.co.real_logic.agrona.concurrent.NanoClock;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 import uk.co.real_logic.agrona.concurrent.status.Position;
@@ -29,48 +32,80 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 
 import static uk.co.real_logic.aeron.driver.Configuration.PUBLICATION_HEARTBEAT_TIMEOUT_NS;
+import static uk.co.real_logic.aeron.driver.Configuration.PUBLICATION_LINGER_NS;
 import static uk.co.real_logic.aeron.driver.Configuration.PUBLICATION_SETUP_TIMEOUT_NS;
 import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
 import static uk.co.real_logic.aeron.logbuffer.TermScanner.*;
 
+class NetworkPublicationPadding1
+{
+    @SuppressWarnings("unused")
+    protected long p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
+}
+
+class NetworkPublicationConductorFields extends NetworkPublicationPadding1
+{
+    protected long timeOfFlush = 0;
+    protected int refCount = 0;
+    protected boolean isActive = true;
+}
+
+class NetworkPublicationPadding2 extends NetworkPublicationConductorFields
+{
+    @SuppressWarnings("unused")
+    protected long p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30;
+}
+
+class NetworkPublicationReceiverFields extends NetworkPublicationPadding2
+{
+    protected long timeOfLastSendOrHeartbeat;
+    protected long senderPositionLimit = 0;
+    protected long timeOfLastSetup;
+    protected boolean trackSenderLimits = true;
+    protected boolean shouldSendSetupFrame = true;
+}
+
+class NetworkPublicationPadding3 extends NetworkPublicationReceiverFields
+{
+    @SuppressWarnings("unused")
+    protected long p31, p32, p33, p34, p35, p36, p37, p38, p39, p40, p41, p42, p43, p44, p45;
+}
+
 /**
  * Publication to be sent to registered subscribers.
  */
-public class NetworkPublication implements RetransmitSender, AutoCloseable
+public class NetworkPublication
+    extends NetworkPublicationPadding3
+    implements RetransmitSender, AutoCloseable, DriverManagedResource
 {
-    private final RawLog rawLog;
-    private final SetupFlyweight setupHeader = new SetupFlyweight();
-    private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight();
-    private final ByteBuffer setupFrameBuffer = ByteBuffer.allocateDirect(SetupFlyweight.HEADER_LENGTH);
-    private final ByteBuffer heartbeatFrameBuffer = ByteBuffer.allocateDirect(DataHeaderFlyweight.HEADER_LENGTH);
-    private final LogBufferPartition[] logPartitions;
-    private final ByteBuffer[] sendBuffers;
-    private final Position publisherLimit;
-    private final Position senderPosition;
-    private final SendChannelEndpoint channelEndpoint;
-    private final SystemCounters systemCounters;
-    private final FlowControl flowControl;
-    private final RetransmitHandler retransmitHandler;
-
     private final int positionBitsToShift;
     private final int initialTermId;
     private final int termLengthMask;
     private final int mtuLength;
     private final int termWindowLength;
 
-    private long timeOfLastSendOrHeartbeat;
-    private long timeOfFlush = 0;
-    private int statusMessagesReceivedCount = 0;
-    private int refCount = 0;
+    private volatile boolean hasStatusMessageBeenReceived = false;
+    private boolean reachedEndOfLife = false;
 
-    private volatile long senderPositionLimit;
-    private boolean trackSenderLimits = true;
-    private volatile boolean isActive = true;
-    private volatile boolean shouldSendSetupFrame = true;
+    private final LogBufferPartition[] logPartitions;
+    private final ByteBuffer[] sendBuffers;
+    private final Position publisherLimit;
+    private final Position senderPosition;
+    private final SendChannelEndpoint channelEndpoint;
+    private final SystemCounters systemCounters;
+    private final ByteBuffer heartbeatFrameBuffer = ByteBuffer.allocateDirect(DataHeaderFlyweight.HEADER_LENGTH);
+    private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight(heartbeatFrameBuffer);
+    private final ByteBuffer setupFrameBuffer = ByteBuffer.allocateDirect(SetupFlyweight.HEADER_LENGTH);
+    private final SetupFlyweight setupHeader = new SetupFlyweight(setupFrameBuffer);
+    private final FlowControl flowControl;
+    private final RetransmitHandler retransmitHandler;
+    private final RawLog rawLog;
+    private final EpochClock epochClock;
 
     public NetworkPublication(
         final SendChannelEndpoint channelEndpoint,
-        final NanoClock clock,
+        final NanoClock nanoClock,
+        final EpochClock epochClock,
         final RawLog rawLog,
         final Position senderPosition,
         final Position publisherLimit,
@@ -78,42 +113,36 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
         final int streamId,
         final int initialTermId,
         final int mtuLength,
-        final long initialPositionLimit,
         final SystemCounters systemCounters,
         final FlowControl flowControl,
         final RetransmitHandler retransmitHandler)
     {
         this.channelEndpoint = channelEndpoint;
         this.rawLog = rawLog;
+        this.epochClock = epochClock;
         this.senderPosition = senderPosition;
         this.systemCounters = systemCounters;
         this.flowControl = flowControl;
         this.retransmitHandler = retransmitHandler;
         this.publisherLimit = publisherLimit;
         this.mtuLength = mtuLength;
+        this.initialTermId = initialTermId;
 
-        logPartitions = rawLog
-            .stream()
-            .map((partition) -> new LogBufferPartition(partition.termBuffer(), partition.metaDataBuffer()))
-            .toArray(LogBufferPartition[]::new);
-
+        logPartitions = rawLog.partitions();
         sendBuffers = rawLog.sliceTerms();
 
-        final int termLength = logPartitions[0].termBuffer().capacity();
+        final int termLength = rawLog.termLength();
         termLengthMask = termLength - 1;
-        senderPositionLimit = initialPositionLimit;
+        flowControl.initialize(initialTermId, termLength);
 
-        timeOfLastSendOrHeartbeat = clock.nanoTime();
+        timeOfLastSendOrHeartbeat = nanoClock.nanoTime() - PUBLICATION_HEARTBEAT_TIMEOUT_NS - 1;
+        timeOfLastSetup = nanoClock.nanoTime() - PUBLICATION_SETUP_TIMEOUT_NS - 1;
 
         positionBitsToShift = Integer.numberOfTrailingZeros(termLength);
-        this.initialTermId = initialTermId;
         termWindowLength = Configuration.publicationTermWindowLength(termLength);
-        publisherLimit.setOrdered(termWindowLength);
+        publisherLimit.setOrdered(0);
 
-        setupHeader.wrap(new UnsafeBuffer(setupFrameBuffer), 0);
         initSetupFrame(initialTermId, termLength, sessionId, streamId);
-
-        dataHeader.wrap(new UnsafeBuffer(heartbeatFrameBuffer), 0);
         initHeartBeatFrame(sessionId, streamId);
     }
 
@@ -126,28 +155,24 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
 
     public int send(final long now)
     {
-        int bytesSent = 0;
+        final long senderPosition = this.senderPosition.get();
+        final int activeTermId = computeTermIdFromPosition(senderPosition, positionBitsToShift, initialTermId);
+        final int termOffset = (int)senderPosition & termLengthMask;
 
-        if (isActive)
+        if (shouldSendSetupFrame)
         {
-            final long senderPosition = this.senderPosition.get();
-            final int activeTermId = computeTermIdFromPosition(senderPosition, positionBitsToShift, initialTermId);
-            final int termOffset = (int)senderPosition & termLengthMask;
-
-            if (shouldSendSetupFrame)
-            {
-                setupMessageCheck(now, activeTermId, termOffset, senderPosition);
-            }
-
-            bytesSent = sendData(now, senderPosition, termOffset);
-
-            if (0 == bytesSent)
-            {
-                heartbeatMessageCheck(now, senderPosition, activeTermId);
-            }
-
-            retransmitHandler.processTimeouts(now, this);
+            setupMessageCheck(now, activeTermId, termOffset);
         }
+
+        final int bytesSent = sendData(now, senderPosition, termOffset);
+
+        if (0 == bytesSent)
+        {
+            heartbeatMessageCheck(now, activeTermId, termOffset);
+            senderPositionLimit = flowControl.onIdle(now);
+        }
+
+        retransmitHandler.processTimeouts(now, this);
 
         return bytesSent;
     }
@@ -169,8 +194,12 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
 
     public void senderPositionLimit(final long positionLimit)
     {
-        statusMessagesReceivedCount++;
         senderPositionLimit = positionLimit;
+
+        if (!hasStatusMessageBeenReceived)
+        {
+            hasStatusMessageBeenReceived = true;
+        }
     }
 
     /**
@@ -245,24 +274,6 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
         shouldSendSetupFrame = true;
     }
 
-    public int decRef()
-    {
-        return --refCount;
-    }
-
-    public int incRef()
-    {
-        final int i = ++refCount;
-
-        if (i == 1)
-        {
-            timeOfFlush = 0;
-            isActive = true;
-        }
-
-        return i;
-    }
-
     public boolean isUnreferencedAndFlushed(final long now)
     {
         boolean isFlushed = false;
@@ -270,9 +281,9 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
         {
             final long senderPosition = this.senderPosition.getVolatile();
             final int activeIndex = indexByPosition(senderPosition, positionBitsToShift);
-            isFlushed = (int)(senderPosition & termLengthMask) >= logPartitions[activeIndex].tailVolatile();
+            isFlushed = (int)(senderPosition & termLengthMask) >= logPartitions[activeIndex].tailOffsetVolatile();
 
-            if (isFlushed && isActive)
+            if (isActive && isFlushed)
             {
                 timeOfFlush = now;
                 isActive = false;
@@ -300,7 +311,10 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
     public int updatePublishersLimit()
     {
         int workCount = 0;
-        final long candidatePublisherLimit = senderPosition.getVolatile() + termWindowLength;
+
+        final long candidatePublisherLimit =
+            hasStatusMessageBeenReceived ? senderPosition.getVolatile() + termWindowLength : 0L;
+
         if (publisherLimit.proposeMaxOrdered(candidatePublisherLimit))
         {
             workCount = 1;
@@ -319,6 +333,9 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
     {
         final long position = flowControl.onStatusMessage(termId, termOffset, receiverWindowLength, srcAddress);
         senderPositionLimit(position);
+
+        final long now = epochClock.time();
+        LogBufferDescriptor.timeOfLastSm(rawLog.logMetaData(), now);
     }
 
     private int sendData(final long now, final long senderPosition, final int termOffset)
@@ -360,9 +377,9 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
         return bytesSent;
     }
 
-    private void setupMessageCheck(final long now, final int activeTermId, final int termOffset, final long senderPosition)
+    private void setupMessageCheck(final long now, final int activeTermId, final int termOffset)
     {
-        if (0 != senderPosition || (now > (timeOfLastSendOrHeartbeat + PUBLICATION_SETUP_TIMEOUT_NS)))
+        if (now > (timeOfLastSetup + PUBLICATION_SETUP_TIMEOUT_NS))
         {
             setupFrameBuffer.clear();
             setupHeader.activeTermId(activeTermId).termOffset(termOffset);
@@ -373,21 +390,20 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
                 systemCounters.setupMessageShortSends().orderedIncrement();
             }
 
+            timeOfLastSetup = now;
             timeOfLastSendOrHeartbeat = now;
-        }
 
-        if (statusMessagesReceivedCount > 0)
-        {
-            shouldSendSetupFrame = false;
+            if (hasStatusMessageBeenReceived)
+            {
+                shouldSendSetupFrame = false;
+            }
         }
     }
 
-    private void heartbeatMessageCheck(final long now, final long senderPosition, final int activeTermId)
+    private void heartbeatMessageCheck(final long now, final int activeTermId, final int termOffset)
     {
         if (now > (timeOfLastSendOrHeartbeat + PUBLICATION_HEARTBEAT_TIMEOUT_NS))
         {
-            final int termOffset = (int)senderPosition & termLengthMask;
-
             heartbeatFrameBuffer.clear();
             dataHeader.termId(activeTermId).termOffset(termOffset);
 
@@ -427,5 +443,70 @@ public class NetworkPublication implements RetransmitSender, AutoCloseable
             .flags((byte)DataHeaderFlyweight.BEGIN_AND_END_FLAGS)
             .headerType(HeaderFlyweight.HDR_TYPE_DATA)
             .frameLength(0);
+    }
+
+    public void onTimeEvent(final long time, final DriverConductor conductor)
+    {
+        if (isUnreferencedAndFlushed(time) && time > (timeOfFlush() + PUBLICATION_LINGER_NS))
+        {
+            reachedEndOfLife = true;
+            conductor.cleanupPublication(NetworkPublication.this);
+        }
+    }
+
+    public boolean hasReachedEndOfLife()
+    {
+        return reachedEndOfLife;
+    }
+
+    public void timeOfLastStateChange(final long time)
+    {
+    }
+
+    public long timeOfLastStateChange()
+    {
+        return timeOfFlush();
+    }
+
+    public void delete()
+    {
+        // close is done once sender thread has removed
+    }
+
+    public int decRef()
+    {
+        final int count = --refCount;
+
+        if (0 == count)
+        {
+            channelEndpoint.removePublication(this);
+        }
+
+        return count;
+    }
+
+    public int incRef()
+    {
+        return ++refCount;
+    }
+
+    public long producerPosition()
+    {
+        final UnsafeBuffer logMetaDataBuffer = rawLog.logMetaData();
+        final int initialTermId = initialTermId(logMetaDataBuffer);
+        final long rawTail = logPartitions[activePartitionIndex(logMetaDataBuffer)].rawTailVolatile();
+        final int termOffset = termOffset(rawTail, rawLog.termLength());
+
+        return computePosition(termId(rawTail), termOffset, positionBitsToShift, initialTermId);
+    }
+
+    public long consumerPosition()
+    {
+        return senderPosition.getVolatile();
+    }
+
+    public boolean unblockAtConsumerPosition()
+    {
+        return LogBufferUnblocker.unblock(logPartitions, rawLog.logMetaData(), consumerPosition());
     }
 }

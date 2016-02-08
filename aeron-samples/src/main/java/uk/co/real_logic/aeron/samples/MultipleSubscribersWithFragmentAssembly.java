@@ -40,7 +40,6 @@ public class MultipleSubscribersWithFragmentAssembly
     private static final int STREAM_ID_1 = SampleConfiguration.STREAM_ID;
     private static final int STREAM_ID_2 = SampleConfiguration.STREAM_ID + 1;
 
-    // Maximum number of fragments to be read in a single poll operation
     private static final int FRAGMENT_COUNT_LIMIT = SampleConfiguration.FRAGMENT_COUNT_LIMIT;
 
     public static void main(final String[] args) throws Exception
@@ -49,41 +48,37 @@ public class MultipleSubscribersWithFragmentAssembly
             CHANNEL, STREAM_ID_1, STREAM_ID_2);
 
         final Aeron.Context ctx = new Aeron.Context()
-            .newImageHandler(MultipleSubscribersWithFragmentAssembly::eventNewImage)
-            .inactiveImageHandler(MultipleSubscribersWithFragmentAssembly::eventInactiveImage);
+            .availableImageHandler(MultipleSubscribersWithFragmentAssembly::eventAvailableImage)
+            .unavailableImageHandler(MultipleSubscribersWithFragmentAssembly::eventUnavailableImage);
 
-        // dataHandler method is called for every new message received
-        // When a message is completely reassembled, the delegate method 'reassembledStringMessage' is called
         final FragmentAssembler dataHandler1 = new FragmentAssembler(reassembledStringMessage1(STREAM_ID_1));
-
-        // Another Data handler for the second stream
         final FragmentAssembler dataHandler2 = new FragmentAssembler(reassembledStringMessage2(STREAM_ID_2));
 
         final AtomicBoolean running = new AtomicBoolean(true);
-
-        // Register a SIGINT handler for graceful shutdown
         SigInt.register(() -> running.set(false));
 
-        // Create an Aeron instance using the default configuration set in the Context, and
-        // add two subscriptions with two different stream IDs.
-        // The Aeron and Subscription classes both implement "AutoCloseable" and will
-        // automatically clean up resources when this try block is finished
         try (final Aeron aeron = Aeron.connect(ctx);
              final Subscription subscription1 = aeron.addSubscription(CHANNEL, STREAM_ID_1);
              final Subscription subscription2 = aeron.addSubscription(CHANNEL, STREAM_ID_2))
         {
-            // Initialize a backoff strategy to avoid excessive spinning
             final IdleStrategy idleStrategy = new BackoffIdleStrategy(
                 100, 10, TimeUnit.MICROSECONDS.toNanos(1), TimeUnit.MICROSECONDS.toNanos(100));
 
-            // Try to read the data for both the subscribers
+            int idleCount = 0;
+
             while (running.get())
             {
                 final int fragmentsRead1 = subscription1.poll(dataHandler1, FRAGMENT_COUNT_LIMIT);
                 final int fragmentsRead2 = subscription2.poll(dataHandler2, FRAGMENT_COUNT_LIMIT);
-                // Give the IdleStrategy a chance to spin/yield/sleep to reduce CPU
-                // use if no messages were received.
-                idleStrategy.idle(fragmentsRead1 + fragmentsRead2);
+
+                if ((fragmentsRead1 + fragmentsRead2) == 0)
+                {
+                    idleStrategy.idle(idleCount++);
+                }
+                else
+                {
+                    idleCount = 0;
+                }
             }
 
             System.out.println("Shutting down...");
@@ -91,44 +86,29 @@ public class MultipleSubscribersWithFragmentAssembly
     }
 
     /**
-     * Print the information for a new image to stdout.
+     * Print the information for an available image to stdout.
      *
-     * @param image          that has been created
-     * @param channel        for the image
-     * @param streamId       for the stream
-     * @param sessionId      for the image publication
-     * @param position       in the stream
-     * @param sourceIdentity that is transport specific
+     * @param image that has been created
      */
-    public static void eventNewImage(
-        final Image image,
-        final String channel,
-        final int streamId,
-        final int sessionId,
-        final long position,
-        final String sourceIdentity)
+    public static void eventAvailableImage(final Image image)
     {
+        final Subscription subscription = image.subscription();
         System.out.format(
             "new image on %s streamId %x sessionId %x from %s%n",
-            channel, streamId, sessionId, sourceIdentity);
-
+            subscription.channel(), subscription.streamId(), image.sessionId(), image.sourceIdentity());
     }
 
     /**
-     * This handler is called when image goes inactive
+     * This handler is called when image is unavailable
      *
-     * @param image     that has gone inactive
-     * @param channel   for the image
-     * @param streamId  for the stream
-     * @param sessionId for the publication image
-     * @param position  within the stream
+     * @param image that has gone inactive
      */
-    public static void eventInactiveImage(
-        final Image image, final String channel, final int streamId, final int sessionId, final long position)
+    public static void eventUnavailableImage(final Image image)
     {
+        final Subscription subscription = image.subscription();
         System.out.format(
             "inactive image on %s streamId %d sessionId %x%n",
-            channel, streamId, sessionId);
+            subscription.channel(), subscription.streamId(), image.sessionId());
     }
 
     /**

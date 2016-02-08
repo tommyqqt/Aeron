@@ -30,8 +30,6 @@ import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_LONG;
  * |                         Correlation ID                        |
  * |                                                               |
  * +---------------------------------------------------------------+
- * |                          Session ID                           |
- * +---------------------------------------------------------------+
  * |                          Stream ID                            |
  * +---------------------------------------------------------------+
  * |                        Channel Length                         |
@@ -42,34 +40,10 @@ import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_LONG;
  */
 public class PublicationMessageFlyweight extends CorrelatedMessageFlyweight
 {
-    private static final int SESSION_ID_FIELD_OFFSET = CORRELATION_ID_FIELD_OFFSET + SIZE_OF_LONG;
-    private static final int STREAM_ID_FIELD_OFFSET = SESSION_ID_FIELD_OFFSET + SIZE_OF_INT;
+    private static final int STREAM_ID_FIELD_OFFSET = CORRELATION_ID_FIELD_OFFSET + SIZE_OF_LONG;
     private static final int CHANNEL_OFFSET = STREAM_ID_FIELD_OFFSET + SIZE_OF_INT;
 
     private int lengthOfChannel;
-
-    /**
-     * Get the session id field
-     *
-     * @return session id field
-     */
-    public int sessionId()
-    {
-        return buffer().getInt(offset() + SESSION_ID_FIELD_OFFSET, ByteOrder.LITTLE_ENDIAN);
-    }
-
-    /**
-     * Set session id field
-     *
-     * @param sessionId field value
-     * @return flyweight
-     */
-    public PublicationMessageFlyweight sessionId(final int sessionId)
-    {
-        buffer().putInt(offset() + SESSION_ID_FIELD_OFFSET, sessionId, ByteOrder.LITTLE_ENDIAN);
-
-        return this;
-    }
 
     /**
      * Get the stream id field
@@ -78,7 +52,7 @@ public class PublicationMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public int streamId()
     {
-        return buffer().getInt(offset() + STREAM_ID_FIELD_OFFSET, ByteOrder.LITTLE_ENDIAN);
+        return buffer.getInt(offset + STREAM_ID_FIELD_OFFSET);
     }
 
     /**
@@ -89,7 +63,7 @@ public class PublicationMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public PublicationMessageFlyweight streamId(final int streamId)
     {
-        buffer().putInt(offset() + STREAM_ID_FIELD_OFFSET, streamId, ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(offset + STREAM_ID_FIELD_OFFSET, streamId);
 
         return this;
     }
@@ -101,7 +75,7 @@ public class PublicationMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public String channel()
     {
-        return stringGet(offset() + CHANNEL_OFFSET, ByteOrder.LITTLE_ENDIAN);
+        return buffer.getStringUtf8(offset + CHANNEL_OFFSET, ByteOrder.nativeOrder());
     }
 
     /**
@@ -112,7 +86,7 @@ public class PublicationMessageFlyweight extends CorrelatedMessageFlyweight
      */
     public PublicationMessageFlyweight channel(final String channel)
     {
-        lengthOfChannel = stringPut(offset() + CHANNEL_OFFSET, channel, ByteOrder.LITTLE_ENDIAN);
+        lengthOfChannel = buffer.putStringUtf8(offset + CHANNEL_OFFSET, channel, ByteOrder.nativeOrder());
 
         return this;
     }

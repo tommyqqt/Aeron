@@ -21,8 +21,8 @@ import uk.co.real_logic.aeron.driver.RateReporter;
 import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
 import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
 import uk.co.real_logic.agrona.LangUtil;
-import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.IdleStrategy;
+import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -43,7 +43,7 @@ public class SamplesUtil
     public static Consumer<Subscription> subscriberLoop(
         final FragmentHandler fragmentHandler, final int limit, final AtomicBoolean running)
     {
-        final IdleStrategy idleStrategy = new BusySpinIdleStrategy();
+        final IdleStrategy idleStrategy = new NoOpIdleStrategy();
 
         return subscriberLoop(fragmentHandler, limit, running, idleStrategy);
     }
@@ -67,8 +67,7 @@ public class SamplesUtil
                 {
                     while (running.get())
                     {
-                        final int fragmentsRead = subscription.poll(fragmentHandler, limit);
-                        idleStrategy.idle(fragmentsRead);
+                        idleStrategy.idle(subscription.poll(fragmentHandler, limit));
                     }
                 }
                 catch (final Exception ex)
@@ -148,42 +147,28 @@ public class SamplesUtil
     }
 
     /**
-     * Print the information for a new image to stdout.
+     * Print the information for an available image to stdout.
      *
-     * @param image           that has been created
-     * @param channel         for the image
-     * @param streamId        for the stream
-     * @param sessionId       for the image publication
-     * @param joiningPosition for the subscriber in the stream
-     * @param sourceIdentity  that is transport specific
+     * @param image that has been created
      */
-    public static void printNewImage(
-        final Image image,
-        final String channel,
-        final int streamId,
-        final int sessionId,
-        final long joiningPosition,
-        final String sourceIdentity)
+    public static void printAvailableImage(final Image image)
     {
+        final Subscription subscription = image.subscription();
         System.out.println(String.format(
-            "New image on %s streamId=%d sessionId=%d at position=%d from %s",
-            channel, streamId, sessionId, joiningPosition, sourceIdentity));
+            "Available image on %s streamId=%d sessionId=%d from %s",
+            subscription.channel(), subscription.streamId(), image.sessionId(), image.sourceIdentity()));
     }
 
     /**
-     * Print the information for an inactive image to stdout.
+     * Print the information for an unavailable image to stdout.
      *
-     * @param image     that has gone inactive
-     * @param channel   for the image
-     * @param streamId  for the stream
-     * @param sessionId for the image publication
-     * @param position  at which the image went inactive
+     * @param image that has gone inactive
      */
-    public static void printInactiveImage(
-        final Image image, final String channel, final int streamId, final int sessionId, final long position)
+    public static void printUnavailableImage(final Image image)
     {
+        final Subscription subscription = image.subscription();
         System.out.println(String.format(
-            "Inactive image on %s streamId=%d sessionId=%d at position=%d",
-            channel, streamId, sessionId, position));
+            "Unavailable image on %s streamId=%d sessionId=%d",
+            subscription.channel(), subscription.streamId(), image.sessionId()));
     }
 }

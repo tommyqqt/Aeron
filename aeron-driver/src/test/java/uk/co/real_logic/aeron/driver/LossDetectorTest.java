@@ -73,7 +73,7 @@ public class LossDetectorTest
         nakMessageSender = mock(NakMessageSender.class);
 
         handler = new LossDetector(DELAY_GENERATOR, nakMessageSender);
-        dataHeader.wrap(rcvBuffer, 0);
+        dataHeader.wrap(rcvBuffer);
     }
 
     @Test
@@ -330,7 +330,7 @@ public class LossDetectorTest
                   .flags(DataHeaderFlyweight.BEGIN_AND_END_FLAGS)
                   .version(HeaderFlyweight.CURRENT_VERSION);
 
-        dataHeader.buffer().putBytes(dataHeader.dataOffset(), payload);
+        rcvBuffer.putBytes(dataHeader.dataOffset(), payload);
 
         TermRebuilder.insert(termBuffer, offset, rcvBuffer, payload.length + DataHeaderFlyweight.HEADER_LENGTH);
     }

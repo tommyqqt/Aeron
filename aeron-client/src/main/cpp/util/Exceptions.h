@@ -28,10 +28,13 @@
 
 namespace aeron { namespace util {
 
-
-#ifdef _WIN32
+#ifdef _MSC_VER
     #define SOURCEINFO __FUNCTION__,  " : "  __FILE__  " : " TOSTRING(__LINE__)
-    #define AERON_NOEXCEPT
+    #if _MSC_VER >= 1900
+        #define AERON_NOEXCEPT noexcept
+    #else
+        #define AERON_NOEXCEPT throw()
+    #endif
 #else
     #define SOURCEINFO  __PRETTY_FUNCTION__,  " : "  __FILE__  " : " TOSTRING(__LINE__)
     #define AERON_NOEXCEPT noexcept
@@ -77,6 +80,7 @@ DECLARE_SOURCED_EXCEPTION (ElementNotFound);
 DECLARE_SOURCED_EXCEPTION (IllegalArgumentException);
 DECLARE_SOURCED_EXCEPTION (IllegalStateException);
 DECLARE_SOURCED_EXCEPTION (DriverTimeoutException);
+DECLARE_SOURCED_EXCEPTION (ConductorServiceTimeoutException);
 
 class RegistrationException : public SourcedException
 {

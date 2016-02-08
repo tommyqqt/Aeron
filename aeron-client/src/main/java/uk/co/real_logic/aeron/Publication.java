@@ -15,14 +15,13 @@
  */
 package uk.co.real_logic.aeron;
 
-import uk.co.real_logic.aeron.logbuffer.BufferClaim;
-import uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor;
-import uk.co.real_logic.aeron.logbuffer.TermAppender;
+import uk.co.real_logic.aeron.logbuffer.*;
 import uk.co.real_logic.agrona.DirectBuffer;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 import uk.co.real_logic.agrona.concurrent.status.ReadablePosition;
 
 import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
+import static uk.co.real_logic.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 
 /**
  * Aeron Publisher API for sending messages to subscribers of a given channel and streamId pair. Publishers
@@ -31,9 +30,8 @@ import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
  * <p>
  * The APIs used to send are all non-blocking.
  * <p>
- * Note: Publication instances are threadsafe and can be shared between publisher threads.
+ * Note: Publication instances are threadsafe and can be shared between publishing threads.
  * @see Aeron#addPublication(String, int)
- * @see Aeron#addPublication(String, int, int)
  */
 public class Publication implements AutoCloseable
 {
@@ -43,53 +41,76 @@ public class Publication implements AutoCloseable
     public static final long NOT_CONNECTED = -1;
 
     /**
-     * The offer failed due to back pressure preventing further transmission.
+     * The offer failed due to back pressure from the subscribers preventing further transmission.
      */
     public static final long BACK_PRESSURED = -2;
+
+    /**
+     * The offer failed due to an administration action and should be retried.
+     */
+    public static final long ADMIN_ACTION = -3;
+
+    /**
+     * The {@link Publication} has been closed and should no longer be used.
+     */
+    public static final long CLOSED = -4;
 
     private final long registrationId;
     private final int streamId;
     private final int sessionId;
-    private final String channel;
-    private final ClientConductor clientConductor;
-    private final LogBuffers logBuffers;
-    private final TermAppender[] termAppenders = new TermAppender[PARTITION_COUNT];
-    private final ReadablePosition publicationLimit;
-    private final UnsafeBuffer logMetaDataBuffer;
+    private final int initialTermId;
+    private final int maxPayloadLength;
     private final int positionBitsToShift;
+    private final ReadablePosition positionLimit;
+    private final TermAppender[] termAppenders = new TermAppender[PARTITION_COUNT];
+    private final UnsafeBuffer logMetaDataBuffer;
+    private final HeaderWriter headerWriter;
+    private final LogBuffers logBuffers;
+    private final ClientConductor clientConductor;
+    private final String channel;
 
-    private int refCount = 0;
     private volatile boolean isClosed = false;
+    private int refCount = 0;
 
     Publication(
         final ClientConductor clientConductor,
         final String channel,
         final int streamId,
         final int sessionId,
-        final ReadablePosition publicationLimit,
+        final ReadablePosition positionLimit,
         final LogBuffers logBuffers,
         final long registrationId)
     {
         final UnsafeBuffer[] buffers = logBuffers.atomicBuffers();
         final UnsafeBuffer logMetaDataBuffer = buffers[LOG_META_DATA_SECTION_INDEX];
-        final UnsafeBuffer[] defaultFrameHeaders = defaultFrameHeaders(logMetaDataBuffer);
-        final int mtuLength = mtuLength(logMetaDataBuffer);
-        activeTermId(logMetaDataBuffer, initialTermId(logMetaDataBuffer));
 
         for (int i = 0; i < PARTITION_COUNT; i++)
         {
-            termAppenders[i] = new TermAppender(buffers[i], buffers[i + PARTITION_COUNT], defaultFrameHeaders[i], mtuLength);
+            termAppenders[i] = new TermAppender(buffers[i], buffers[i + PARTITION_COUNT]);
         }
 
+        this.maxPayloadLength = mtuLength(logMetaDataBuffer) - HEADER_LENGTH;
         this.clientConductor = clientConductor;
         this.channel = channel;
         this.streamId = streamId;
         this.sessionId = sessionId;
-        this.logBuffers = logBuffers;
+        this.initialTermId = initialTermId(logMetaDataBuffer);
         this.logMetaDataBuffer = logMetaDataBuffer;
         this.registrationId = registrationId;
-        this.publicationLimit = publicationLimit;
-        this.positionBitsToShift = Integer.numberOfTrailingZeros(termAppenders[0].termBuffer().capacity());
+        this.positionLimit = positionLimit;
+        this.logBuffers = logBuffers;
+        this.positionBitsToShift = Integer.numberOfTrailingZeros(logBuffers.termLength());
+        this.headerWriter = new HeaderWriter(defaultFrameHeader(logMetaDataBuffer));
+    }
+
+    /**
+     * Get the length in bytes for each term partition in the log buffer.
+     *
+     * @return the length in bytes for each term partition in the log buffer.
+     */
+    public int termBufferLength()
+    {
+        return logBuffers.termLength();
     }
 
     /**
@@ -129,11 +150,31 @@ public class Publication implements AutoCloseable
      */
     public int maxMessageLength()
     {
-        return termAppenders[0].maxMessageLength();
+        return FrameDescriptor.computeMaxMessageLength(logBuffers.termLength());
     }
 
     /**
-     * Release resources used by this Publication.
+     * Has this {@link Publication} been connected to a {@link Subscription}?
+     *
+     * @return true if this {@link Publication} been connected to a {@link Subscription} otherwise false.
+     */
+    public boolean hasBeenConnected()
+    {
+        return !isClosed && positionLimit.getVolatile() > 0;
+    }
+
+    /**
+     * Has the {@link Publication} seen an active Subscriber recently?
+     *
+     * @return true if this {@link Publication} has seen an active subscriber otherwise false.
+     */
+    public boolean isStillConnected()
+    {
+        return clientConductor.isPublicationConnected(LogBufferDescriptor.timeOfLastSm(logMetaDataBuffer));
+    }
+
+    /**
+     * Release resources used by this Publication when there are no more references.
      *
      * Publications are reference counted and are only truly closed when the ref count reaches zero.
      */
@@ -143,10 +184,31 @@ public class Publication implements AutoCloseable
         {
             if (--refCount == 0)
             {
-                isClosed = true;
-                clientConductor.releasePublication(this);
-                logBuffers.close();
+                release();
             }
+        }
+    }
+
+    /**
+     * Has this object been closed and should no longer be used?
+     *
+     * @return true if it has been closed otherwise false.
+     */
+    public boolean isClosed()
+    {
+        return isClosed;
+    }
+
+    /**
+     * Release resources and forcibly close the Publication regardless of reference count.
+     */
+    void release()
+    {
+        if (!isClosed)
+        {
+            isClosed = true;
+            clientConductor.releasePublication(this);
+            logBuffers.close();
         }
     }
 
@@ -158,20 +220,40 @@ public class Publication implements AutoCloseable
      */
     public long position()
     {
-        ensureOpen();
+        if (isClosed)
+        {
+            return CLOSED;
+        }
 
-        final int initialTermId = initialTermId(logMetaDataBuffer);
-        final int activeTermId = activeTermId(logMetaDataBuffer);
-        final int currentTail = termAppenders[indexByTerm(initialTermId, activeTermId)].tailVolatile();
+        final long rawTail = termAppenders[activePartitionIndex(logMetaDataBuffer)].rawTailVolatile();
+        final int termOffset = termOffset(rawTail, logBuffers.termLength());
 
-        return computePosition(activeTermId, currentTail, positionBitsToShift, initialTermId);
+        return computePosition(termId(rawTail), termOffset, positionBitsToShift, initialTermId);
+    }
+
+    /**
+     * Get the position limit beyond which this {@link Publication} will be back pressured.
+     *
+     * This should only be used as a guide to determine when back pressure is likely to be applied.
+     *
+     * @return the position limit beyond which this {@link Publication} will be back pressured.
+     */
+    public long positionLimit()
+    {
+        if (isClosed)
+        {
+            return CLOSED;
+        }
+
+        return positionLimit.getVolatile();
     }
 
     /**
      * Non-blocking publish of a buffer containing a message.
      *
      * @param buffer containing message.
-     * @return The new stream position on success, otherwise {@link #BACK_PRESSURED} or {@link #NOT_CONNECTED}.
+     * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
+     * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
     public long offer(final DirectBuffer buffer)
     {
@@ -184,28 +266,44 @@ public class Publication implements AutoCloseable
      * @param buffer containing message.
      * @param offset offset in the buffer at which the encoded message begins.
      * @param length in bytes of the encoded message.
-     * @return The new stream position on success, otherwise {@link #BACK_PRESSURED} or {@link #NOT_CONNECTED}.
-     * @throws IllegalStateException if the publication is closed.
+     * @return The new stream position, otherwise a negative error value {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED} or
+     * {@link #ADMIN_ACTION}.
      */
     public long offer(final DirectBuffer buffer, final int offset, final int length)
     {
-        ensureOpen();
-
-        final int initialTermId = initialTermId(logMetaDataBuffer);
-        final int activeTermId = activeTermId(logMetaDataBuffer);
-        final int activeIndex = indexByTerm(initialTermId, activeTermId);
-        final TermAppender termAppender = termAppenders[activeIndex];
-        final int currentTail = termAppender.rawTailVolatile();
-        final long position = computePosition(activeTermId, currentTail, positionBitsToShift, initialTermId);
-        final int capacity = termAppender.termBuffer().capacity();
-
-        final long limit = publicationLimit.getVolatile();
-        long newPosition = limit > 0 ? BACK_PRESSURED : NOT_CONNECTED;
-
-        if (currentTail < capacity && position < limit)
+        long newPosition = CLOSED;
+        if (!isClosed)
         {
-            final int nextOffset = termAppender.append(buffer, offset, length);
-            newPosition = newPosition(activeTermId, activeIndex, currentTail, position, nextOffset);
+            final long limit = positionLimit.getVolatile();
+            final int partitionIndex = activePartitionIndex(logMetaDataBuffer);
+            final TermAppender termAppender = termAppenders[partitionIndex];
+            final long rawTail = termAppender.rawTailVolatile();
+            final long termOffset = rawTail & 0xFFFF_FFFFL;
+            final long position = computeTermBeginPosition(termId(rawTail), positionBitsToShift, initialTermId) + termOffset;
+
+            if (position < limit)
+            {
+                final long result;
+                if (length <= maxPayloadLength)
+                {
+                    result = termAppender.appendUnfragmentedMessage(headerWriter, buffer, offset, length);
+                }
+                else
+                {
+                    checkForMaxMessageLength(length);
+                    result = termAppender.appendFragmentedMessage(headerWriter, buffer, offset, length, maxPayloadLength);
+                }
+
+                newPosition = newPosition(partitionIndex, (int)termOffset, position, result);
+            }
+            else if (0 == limit)
+            {
+                newPosition = NOT_CONNECTED;
+            }
+            else
+            {
+                newPosition = BACK_PRESSURED;
+            }
         }
 
         return newPosition;
@@ -216,11 +314,11 @@ public class Publication implements AutoCloseable
      * Once the message has been written then {@link BufferClaim#commit()} should be called thus making it available.
      * <p>
      * <b>Note:</b> This method can only be used for message lengths less than MTU length minus header.
-     *U
+     *
      * <pre>{@code
      *     final BufferClaim bufferClaim = new BufferClaim(); // Can be stored and reused to avoid allocation
      *
-     *     if (publication.tryClaim(messageLength, bufferClaim))
+     *     if (publication.tryClaim(messageLength, bufferClaim) > 0L)
      *     {
      *         try
      *         {
@@ -237,41 +335,58 @@ public class Publication implements AutoCloseable
      * }</pre>
      *
      * @param length      of the range to claim, in bytes..
-     * @param bufferClaim to be populate if the claim succeeds.
-     * @return The new stream position on success, otherwise {@link #BACK_PRESSURED} or {@link #NOT_CONNECTED}.
+     * @param bufferClaim to be populated if the claim succeeds.
+     * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
+     * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      * @throws IllegalArgumentException if the length is greater than max payload length within an MTU.
-     * @throws IllegalStateException if the publication is closed.
      * @see BufferClaim#commit()
+     * @see BufferClaim#abort()
      */
     public long tryClaim(final int length, final BufferClaim bufferClaim)
     {
-        ensureOpen();
-
-        final int initialTermId = initialTermId(logMetaDataBuffer);
-        final int activeTermId = activeTermId(logMetaDataBuffer);
-        final int activeIndex = indexByTerm(initialTermId, activeTermId);
-        final TermAppender termAppender = termAppenders[activeIndex];
-        final int currentTail = termAppender.rawTailVolatile();
-        final long position = computePosition(activeTermId, currentTail, positionBitsToShift, initialTermId);
-        final int capacity = termAppender.termBuffer().capacity();
-
-        final long limit = publicationLimit.getVolatile();
-        long newPosition = limit > 0 ? BACK_PRESSURED : NOT_CONNECTED;
-
-        if (currentTail < capacity && position < limit)
+        long newPosition = CLOSED;
+        if (!isClosed)
         {
-            final int nextOffset = termAppender.claim(length, bufferClaim);
-            newPosition = newPosition(activeTermId, activeIndex, currentTail, position, nextOffset);
+            checkForMaxPayloadLength(length);
+
+            final long limit = positionLimit.getVolatile();
+            final int partitionIndex = activePartitionIndex(logMetaDataBuffer);
+            final TermAppender termAppender = termAppenders[partitionIndex];
+            final long rawTail = termAppender.rawTailVolatile();
+            final long termOffset = rawTail & 0xFFFF_FFFFL;
+            final long position = computeTermBeginPosition(termId(rawTail), positionBitsToShift, initialTermId) + termOffset;
+
+            if (position  < limit)
+            {
+                final long result = termAppender.claim(headerWriter, length, bufferClaim);
+                newPosition = newPosition(partitionIndex, (int)termOffset, position, result);
+            }
+            else if (0 == limit)
+            {
+                newPosition = NOT_CONNECTED;
+            }
+            else
+            {
+                newPosition = BACK_PRESSURED;
+            }
         }
 
         return newPosition;
     }
 
-    long registrationId()
+    /**
+     * Return the registration id used to register this Publication with the media driver.
+     *
+     * @return registration id
+     */
+    public long registrationId()
     {
         return registrationId;
     }
 
+    /**
+     * @see Publication#close()
+     */
     void incRef()
     {
         synchronized (clientConductor)
@@ -280,47 +395,43 @@ public class Publication implements AutoCloseable
         }
     }
 
-    private long newPosition(
-        final int activeTermId, final int activeIndex, final int currentTail, final long position, final int nextOffset)
+    private long newPosition(final int index, final int currentTail, final long position, final long result)
     {
-        final long newPosition;
-        switch (nextOffset)
+        long newPosition = ADMIN_ACTION;
+        final int termOffset = TermAppender.termOffset(result);
+        if (termOffset > 0)
         {
-            case TermAppender.TRIPPED:
-            {
-                final int newTermId = activeTermId + 1;
-                final int nextIndex = nextPartitionIndex(activeIndex);
-                final int nextNextIndex = nextPartitionIndex(nextIndex);
+            newPosition = (position - currentTail) + termOffset;
+        }
+        else if (termOffset == TermAppender.TRIPPED)
+        {
+            final int nextIndex = nextPartitionIndex(index);
+            final int nextNextIndex = nextPartitionIndex(nextIndex);
 
-                LogBufferDescriptor.defaultHeaderTermId(logMetaDataBuffer, nextIndex, newTermId);
-
-                // Need to advance the term id in case a publication takes an interrupt between reading the active term
-                // and incrementing the tail. This covers the case of interrupt talking over one term in duration.
-                LogBufferDescriptor.defaultHeaderTermId(logMetaDataBuffer, nextNextIndex, newTermId + 1);
-
-                termAppenders[nextNextIndex].statusOrdered(NEEDS_CLEANING);
-                LogBufferDescriptor.activeTermId(logMetaDataBuffer, newTermId);
-            }
-
-                // fall through
-            case TermAppender.FAILED:
-                newPosition = BACK_PRESSURED;
-                break;
-
-            default:
-                newPosition = (position - currentTail) + nextOffset;
+            termAppenders[nextIndex].tailTermId(TermAppender.termId(result) + 1);
+            termAppenders[nextNextIndex].statusOrdered(NEEDS_CLEANING);
+            LogBufferDescriptor.activePartitionIndex(logMetaDataBuffer, nextIndex);
         }
 
         return newPosition;
     }
 
-    private void ensureOpen()
+    private void checkForMaxPayloadLength(final int length)
     {
-        if (isClosed)
+        if (length > maxPayloadLength)
         {
-            throw new IllegalStateException(String.format(
-                "Publication is closed: channel=%s streamId=%d sessionId=%d registrationId=%d",
-                channel, streamId, sessionId, registrationId));
+            throw new IllegalArgumentException(String.format(
+                "Claim exceeds maxPayloadLength of %d, length=%d", maxPayloadLength, length));
+        }
+    }
+
+    private void checkForMaxMessageLength(final int length)
+    {
+        final int maxMessageLength = maxMessageLength();
+        if (length > maxMessageLength)
+        {
+            throw new IllegalArgumentException(String.format(
+                "Encoded message exceeds maxMessageLength of %d, length=%d", maxMessageLength, length));
         }
     }
 }

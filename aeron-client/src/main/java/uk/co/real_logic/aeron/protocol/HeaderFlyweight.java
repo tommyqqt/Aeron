@@ -15,13 +15,15 @@
  */
 package uk.co.real_logic.aeron.protocol;
 
-import uk.co.real_logic.aeron.Flyweight;
+import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+
+import java.nio.ByteBuffer;
 
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_SHORT;
 
 /**
- * Flyweight for general Aeron header
+ * Flyweight for general Aeron network protocol header
  *
  * 0                   1                   2                   3
  * 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -33,8 +35,10 @@ import static uk.co.real_logic.agrona.BitUtil.SIZE_OF_SHORT;
  * |                       Depends on Type                        ...
  *
  */
-public class HeaderFlyweight extends Flyweight
+public class HeaderFlyweight extends UnsafeBuffer
 {
+    public static final byte[] EMPTY_BUFFER = new byte[0];
+
     /** header type PAD */
     public static final int HDR_TYPE_PAD = 0x00;
     /** header type DATA */
@@ -59,6 +63,21 @@ public class HeaderFlyweight extends Flyweight
     public static final int TYPE_FIELD_OFFSET = 6;
     public static final int HEADER_LENGTH = TYPE_FIELD_OFFSET + SIZE_OF_SHORT;
 
+    public HeaderFlyweight()
+    {
+        super(EMPTY_BUFFER);
+    }
+
+    public HeaderFlyweight(final UnsafeBuffer buffer)
+    {
+        super(buffer);
+    }
+
+    public HeaderFlyweight(final ByteBuffer buffer)
+    {
+        super(buffer);
+    }
+
     /**
      * return version field value
      *
@@ -66,18 +85,18 @@ public class HeaderFlyweight extends Flyweight
      */
     public short version()
     {
-        return uint8Get(offset() + VERSION_FIELD_OFFSET);
+        return (short)(getByte(VERSION_FIELD_OFFSET) & 0xFF);
     }
 
     /**
      * set version field value
      *
-     * @param ver field value
+     * @param version field value
      * @return flyweight
      */
-    public HeaderFlyweight version(final short ver)
+    public HeaderFlyweight version(final short version)
     {
-        uint8Put(offset() + VERSION_FIELD_OFFSET, ver);
+        putByte(VERSION_FIELD_OFFSET, (byte)version);
 
         return this;
     }
@@ -89,7 +108,7 @@ public class HeaderFlyweight extends Flyweight
      */
     public short flags()
     {
-        return uint8Get(offset() + FLAGS_FIELD_OFFSET);
+        return (short)(getByte(FLAGS_FIELD_OFFSET) & 0xFF);
     }
 
     /**
@@ -100,7 +119,7 @@ public class HeaderFlyweight extends Flyweight
      */
     public HeaderFlyweight flags(final short flags)
     {
-        uint8Put(offset() + FLAGS_FIELD_OFFSET, flags);
+        putByte(FLAGS_FIELD_OFFSET, (byte)flags);
 
         return this;
     }
@@ -112,7 +131,7 @@ public class HeaderFlyweight extends Flyweight
      */
     public int headerType()
     {
-        return uint16Get(offset() + TYPE_FIELD_OFFSET, LITTLE_ENDIAN);
+        return getShort(TYPE_FIELD_OFFSET, LITTLE_ENDIAN) & 0xFFFF;
     }
 
     /**
@@ -123,7 +142,7 @@ public class HeaderFlyweight extends Flyweight
      */
     public HeaderFlyweight headerType(final int type)
     {
-        uint16Put(offset() + TYPE_FIELD_OFFSET, (short)type, LITTLE_ENDIAN);
+        putShort(TYPE_FIELD_OFFSET, (short)type, LITTLE_ENDIAN);
 
         return this;
     }
@@ -135,7 +154,7 @@ public class HeaderFlyweight extends Flyweight
      */
     public int frameLength()
     {
-        return buffer().getInt(offset() + FRAME_LENGTH_FIELD_OFFSET, LITTLE_ENDIAN);
+        return getInt(FRAME_LENGTH_FIELD_OFFSET, LITTLE_ENDIAN);
     }
 
     /**
@@ -146,7 +165,7 @@ public class HeaderFlyweight extends Flyweight
      */
     public HeaderFlyweight frameLength(final int length)
     {
-        buffer().putInt(offset() + FRAME_LENGTH_FIELD_OFFSET, length, LITTLE_ENDIAN);
+        putInt(FRAME_LENGTH_FIELD_OFFSET, length, LITTLE_ENDIAN);
 
         return this;
     }

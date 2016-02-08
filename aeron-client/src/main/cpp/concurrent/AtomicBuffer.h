@@ -64,27 +64,17 @@ public:
         buffer.fill(initialValue);
     }
 
-    AtomicBuffer(const AtomicBuffer& buffer) :
-        m_buffer(buffer.m_buffer), m_length(buffer.m_length)
-    {
-    }
+    AtomicBuffer(const AtomicBuffer& buffer) = default;
 
     AtomicBuffer(AtomicBuffer&& buffer) :
         m_buffer(buffer.m_buffer), m_length(buffer.m_length)
     {
     }
 
-    AtomicBuffer& operator=(AtomicBuffer& buffer)
-    {
-        m_buffer = buffer.m_buffer;
-        m_length = buffer.m_length;
-        return *this;
-    }
+    AtomicBuffer& operator=(AtomicBuffer& buffer) = default;
 
-    virtual ~AtomicBuffer()
-    {
-        // this class does not own the memory. It simply overlays it.
-    }
+    // this class does not own the memory. It simply overlays it.
+    virtual ~AtomicBuffer() = default;
 
     inline void wrap(std::uint8_t* buffer, util::index_t length)
     {
@@ -242,7 +232,7 @@ public:
     }
 
     // increment from multiple threads
-    inline std::int64_t getAndAddInt64(util::index_t offset, std::int64_t delta)
+    inline COND_MOCK_VIRTUAL std::int64_t getAndAddInt64(util::index_t offset, std::int64_t delta)
     {
         boundsCheck(offset, sizeof(std::int64_t));
         return atomic::getAndAddInt64((volatile std::int64_t*)(m_buffer + offset), delta);

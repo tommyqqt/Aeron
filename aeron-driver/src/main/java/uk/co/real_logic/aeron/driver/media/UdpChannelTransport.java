@@ -15,18 +15,17 @@
  */
 package uk.co.real_logic.aeron.driver.media;
 
+import uk.co.real_logic.aeron.driver.Configuration;
 import uk.co.real_logic.aeron.driver.event.EventCode;
 import uk.co.real_logic.aeron.driver.event.EventLogger;
 import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
-import uk.co.real_logic.aeron.driver.Configuration;
-import uk.co.real_logic.aeron.driver.LossGenerator;
 import uk.co.real_logic.agrona.LangUtil;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
 import java.io.IOException;
 import java.net.*;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectionKey;
 
@@ -35,29 +34,26 @@ import static uk.co.real_logic.aeron.logbuffer.FrameDescriptor.frameVersion;
 
 public abstract class UdpChannelTransport implements AutoCloseable
 {
-    private final UdpChannel udpChannel;
-    private final LossGenerator lossGenerator;
-    private final EventLogger logger;
-    private final ByteBuffer receiveByteBuffer = ByteBuffer.allocateDirect(Configuration.RECEIVE_BYTE_BUFFER_LENGTH);
-    private final UnsafeBuffer receiveBuffer = new UnsafeBuffer(receiveByteBuffer);
-    private DatagramChannel sendDatagramChannel;
-    private DatagramChannel receiveDatagramChannel;
-    private SelectionKey selectionKey;
-    private TransportPoller transportPoller;
-    private InetSocketAddress bindSocketAddress;
-    private InetSocketAddress endPointSocketAddress;
-    private InetSocketAddress connectAddress;
+    protected final ByteBuffer receiveByteBuffer = ByteBuffer.allocateDirect(Configuration.RECEIVE_BYTE_BUFFER_LENGTH);
+    protected final UnsafeBuffer receiveBuffer = new UnsafeBuffer(receiveByteBuffer);
+    protected DatagramChannel sendDatagramChannel;
+    protected DatagramChannel receiveDatagramChannel;
+    protected SelectionKey selectionKey;
+    protected UdpTransportPoller transportPoller;
+    protected InetSocketAddress bindSocketAddress;
+    protected InetSocketAddress endPointSocketAddress;
+    protected InetSocketAddress connectAddress;
+    protected final UdpChannel udpChannel;
+    protected final EventLogger logger;
 
     public UdpChannelTransport(
         final UdpChannel udpChannel,
         final InetSocketAddress endPointSocketAddress,
         final InetSocketAddress bindSocketAddress,
         final InetSocketAddress connectAddress,
-        final LossGenerator lossGenerator,
         final EventLogger logger)
     {
         this.udpChannel = udpChannel;
-        this.lossGenerator = lossGenerator;
         this.logger = logger;
         this.endPointSocketAddress = endPointSocketAddress;
         this.bindSocketAddress = bindSocketAddress;
@@ -123,11 +119,11 @@ public abstract class UdpChannelTransport implements AutoCloseable
     }
 
     /**
-     * Register this transport for reading from a {@link TransportPoller}.
+     * Register this transport for reading from a {@link UdpTransportPoller}.
      *
      * @param transportPoller to register read with
      */
-    public void registerForRead(final TransportPoller transportPoller)
+    public void registerForRead(final UdpTransportPoller transportPoller)
     {
         this.transportPoller = transportPoller;
         selectionKey = transportPoller.registerForRead(this);
@@ -151,57 +147,6 @@ public abstract class UdpChannelTransport implements AutoCloseable
     public DatagramChannel receiveDatagramChannel()
     {
         return receiveDatagramChannel;
-    }
-
-    /**
-     * Send contents of {@link ByteBuffer} to connected address
-     *
-     * @param buffer to send
-     * @return number of bytes sent
-     */
-    public int send(final ByteBuffer buffer)
-    {
-        logger.logFrameOut(buffer, connectAddress);
-
-        int byteSent = 0;
-        try
-        {
-            byteSent = sendDatagramChannel.write(buffer);
-        }
-        catch (final PortUnreachableException ex)
-        {
-            // ignore
-        }
-        catch (final IOException ex)
-        {
-            LangUtil.rethrowUnchecked(ex);
-        }
-
-        return byteSent;
-    }
-
-    /**
-     * Send contents of {@link java.nio.ByteBuffer} to remote address
-     *
-     * @param buffer        to send
-     * @param remoteAddress to send to
-     * @return number of bytes sent
-     */
-    public int sendTo(final ByteBuffer buffer, final InetSocketAddress remoteAddress)
-    {
-        logger.logFrameOut(buffer, remoteAddress);
-
-        int bytesSent = 0;
-        try
-        {
-            bytesSent = sendDatagramChannel.send(buffer, remoteAddress);
-        }
-        catch (final IOException ex)
-        {
-            LangUtil.rethrowUnchecked(ex);
-        }
-
-        return bytesSent;
     }
 
     /**
@@ -276,45 +221,14 @@ public abstract class UdpChannelTransport implements AutoCloseable
         return receiveByteBuffer.capacity();
     }
 
-    protected abstract int dispatch(final UnsafeBuffer receiveBuffer, final int length, final InetSocketAddress srcAddress);
-
     /**
      * Attempt to receive waiting data.
      *
      * @return number of bytes received.
      */
-    public int pollForData()
-    {
-        int bytesReceived = 0;
-        final InetSocketAddress srcAddress = receive();
+    public abstract int pollForData();
 
-        if (null != srcAddress)
-        {
-            final int length = receiveByteBuffer.position();
-            if (lossGenerator.shouldDropFrame(srcAddress, receiveBuffer, length))
-            {
-                logger.logFrameInDropped(receiveByteBuffer, 0, length, srcAddress);
-            }
-            else
-            {
-                logger.logFrameIn(receiveByteBuffer, 0, length, srcAddress);
-
-                if (isValidFrame(receiveBuffer, length))
-                {
-                    bytesReceived = dispatch(receiveBuffer, length, srcAddress);
-                }
-            }
-        }
-
-        return bytesReceived;
-    }
-
-    protected UnsafeBuffer receiveBuffer()
-    {
-        return receiveBuffer;
-    }
-
-    private boolean isValidFrame(final UnsafeBuffer receiveBuffer, final int length)
+    public boolean isValidFrame(final UnsafeBuffer receiveBuffer, final int length)
     {
         boolean isFrameValid = true;
 
@@ -332,16 +246,16 @@ public abstract class UdpChannelTransport implements AutoCloseable
         return isFrameValid;
     }
 
-    private InetSocketAddress receive()
+    protected final InetSocketAddress receive()
     {
         receiveByteBuffer.clear();
 
         InetSocketAddress address = null;
         try
         {
-            address = (InetSocketAddress) receiveDatagramChannel.receive(receiveByteBuffer);
+            address = (InetSocketAddress)receiveDatagramChannel.receive(receiveByteBuffer);
         }
-        catch (final PortUnreachableException | ClosedByInterruptException ignored)
+        catch (final PortUnreachableException | ClosedChannelException ignored)
         {
             // do nothing
         }

@@ -33,10 +33,15 @@ using namespace aeron;
 #define TERM_BUFFER_UNALIGNED_CAPACITY (LogBufferDescriptor::TERM_MIN_LENGTH + FrameDescriptor::FRAME_ALIGNMENT - 1)
 #define INITIAL_TERM_ID 7
 
-typedef std::array<std::uint8_t, TERM_BUFFER_CAPACITY> log_buffer_t;
-typedef std::array<std::uint8_t, META_DATA_BUFFER_CAPACITY> state_buffer_t;
+typedef std::array<std::uint8_t, TERM_BUFFER_CAPACITY> term_buffer_t;
+typedef std::array<std::uint8_t, META_DATA_BUFFER_CAPACITY> meta_data_buffer_t;
 typedef std::array<std::uint8_t, HDR_LENGTH> hdr_t;
 typedef std::array<std::uint8_t, TERM_BUFFER_UNALIGNED_CAPACITY> log_buffer_unaligned_t;
+
+void rethrowHandler(std::exception& ex)
+{
+    throw ex;
+}
 
 class MockDataHandler
 {
@@ -44,12 +49,15 @@ public:
     MOCK_CONST_METHOD4(onData, void(AtomicBuffer&, util::index_t, util::index_t, Header&));
 };
 
+using namespace std::placeholders;
+
 class TermReaderTest : public testing::Test
 {
 public:
     TermReaderTest() :
         m_log(&m_logBuffer[0], m_logBuffer.size()),
-        m_fragmentHeader(INITIAL_TERM_ID, TERM_BUFFER_CAPACITY)
+        m_fragmentHeader(INITIAL_TERM_ID, TERM_BUFFER_CAPACITY),
+        m_handler_func(std::bind(&MockDataHandler::onData, &m_handler, _1, _2, _3, _4))
     {
         m_logBuffer.fill(0);
     }
@@ -60,10 +68,11 @@ public:
     }
 
 protected:
-    AERON_DECL_ALIGNED(log_buffer_t m_logBuffer, 16);
+    AERON_DECL_ALIGNED(term_buffer_t m_logBuffer, 16);
     MockAtomicBuffer m_log;
     Header m_fragmentHeader;
     MockDataHandler m_handler;
+    fragment_handler_t m_handler_func;
 };
 
 TEST_F(TermReaderTest, shouldReadFirstMessage)
@@ -90,11 +99,9 @@ TEST_F(TermReaderTest, shouldReadFirstMessage)
         .InSequence(sequence)
         .WillOnce(testing::Return(0));
 
-    const TermReader::ReadOutcome readOutcome = TermReader::read(
-        m_log, termOffset, [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            m_handler.onData(buffer, offset, length, header);
-        }, INT_MAX, m_fragmentHeader);
+    TermReader::ReadOutcome readOutcome;
+
+    TermReader::read(readOutcome, m_log, termOffset, m_handler_func, INT_MAX, m_fragmentHeader, rethrowHandler);
 
     EXPECT_EQ(readOutcome.offset, alignedFrameLength);
     EXPECT_EQ(readOutcome.fragmentsRead, 1);
@@ -114,11 +121,9 @@ TEST_F(TermReaderTest, shouldNotReadPastTail)
     EXPECT_CALL(m_handler, onData(testing::Ref(m_log), DataFrameHeader::LENGTH, testing::_, testing::_))
         .Times(0);
 
-    const TermReader::ReadOutcome readOutcome = TermReader::read(
-        m_log, termOffset, [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            m_handler.onData(buffer, offset, length, header);
-        }, INT_MAX, m_fragmentHeader);
+    TermReader::ReadOutcome readOutcome;
+
+    TermReader::read(readOutcome, m_log, termOffset, m_handler_func, INT_MAX, m_fragmentHeader, rethrowHandler);
 
     EXPECT_EQ(readOutcome.offset, termOffset);
     EXPECT_EQ(readOutcome.fragmentsRead, 0);
@@ -144,11 +149,9 @@ TEST_F(TermReaderTest, shouldReadOneLimitedMessage)
         .Times(1)
         .InSequence(sequence);
 
-    const TermReader::ReadOutcome readOutcome = TermReader::read(
-        m_log, termOffset, [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            m_handler.onData(buffer, offset, length, header);
-        }, 1, m_fragmentHeader);
+    TermReader::ReadOutcome readOutcome;
+
+    TermReader::read(readOutcome, m_log, termOffset, m_handler_func, 1, m_fragmentHeader, rethrowHandler);
 
     EXPECT_EQ(readOutcome.offset, alignedFrameLength);
     EXPECT_EQ(readOutcome.fragmentsRead, 1);
@@ -189,11 +192,9 @@ TEST_F(TermReaderTest, shouldReadMultipleMessages)
         .InSequence(sequence)
         .WillOnce(testing::Return(0));
 
-    const TermReader::ReadOutcome readOutcome = TermReader::read(
-        m_log, termOffset, [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            m_handler.onData(buffer, offset, length, header);
-        }, INT_MAX, m_fragmentHeader);
+    TermReader::ReadOutcome readOutcome;
+
+    TermReader::read(readOutcome, m_log, termOffset, m_handler_func, INT_MAX, m_fragmentHeader, rethrowHandler);
 
     EXPECT_EQ(readOutcome.offset, alignedFrameLength * 2);
     EXPECT_EQ(readOutcome.fragmentsRead, 2);
@@ -219,11 +220,9 @@ TEST_F(TermReaderTest, shouldReadLastMessage)
         .Times(1)
         .InSequence(sequence);
 
-    const TermReader::ReadOutcome readOutcome = TermReader::read(
-        m_log, startOfMessage, [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            m_handler.onData(buffer, offset, length, header);
-        }, INT_MAX, m_fragmentHeader);
+    TermReader::ReadOutcome readOutcome;
+
+    TermReader::read(readOutcome, m_log, startOfMessage, m_handler_func, INT_MAX, m_fragmentHeader, rethrowHandler);
 
     EXPECT_EQ(readOutcome.offset, TERM_BUFFER_CAPACITY);
     EXPECT_EQ(readOutcome.fragmentsRead, 1);
@@ -244,15 +243,13 @@ TEST_F(TermReaderTest, shouldNotReadLastMessageWhenPadding)
     EXPECT_CALL(m_log, getUInt16(FrameDescriptor::typeOffset(startOfMessage)))
         .Times(1)
         .InSequence(sequence)
-        .WillOnce(testing::Return(FrameDescriptor::PADDING_FRAME_TYPE));
+        .WillOnce(testing::Return(DataFrameHeader::HDR_TYPE_PAD));
     EXPECT_CALL(m_handler, onData(testing::Ref(m_log), startOfMessage + DataFrameHeader::LENGTH, msgLength, testing::_))
         .Times(0);
 
-    const TermReader::ReadOutcome readOutcome = TermReader::read(
-        m_log, startOfMessage, [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
-        {
-            m_handler.onData(buffer, offset, length, header);
-        }, INT_MAX, m_fragmentHeader);
+    TermReader::ReadOutcome readOutcome;
+
+    TermReader::read(readOutcome, m_log, startOfMessage, m_handler_func, INT_MAX, m_fragmentHeader, rethrowHandler);
 
     EXPECT_EQ(readOutcome.offset, TERM_BUFFER_CAPACITY);
     EXPECT_EQ(readOutcome.fragmentsRead, 0);

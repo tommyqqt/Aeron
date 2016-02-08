@@ -18,11 +18,11 @@ package uk.co.real_logic.aeron;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
 import uk.co.real_logic.aeron.logbuffer.Header;
 import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
-import uk.co.real_logic.aeron.driver.MediaDriver;
-import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.BitUtil;
 import uk.co.real_logic.agrona.DirectBuffer;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
@@ -36,8 +36,8 @@ import static org.mockito.Mockito.verify;
 
 public class PongTest
 {
-    public static final String PING_URI = "udp://localhost:54325";
-    public static final String PONG_URI = "udp://localhost:54326";
+    public static final String PING_URI = "aeron:udp?remote=localhost:54325";
+    public static final String PONG_URI = "aeron:udp?remote=localhost:54326";
 
     private static final int PING_STREAM_ID = 1;
     private static final int PONG_STREAM_ID = 2;
