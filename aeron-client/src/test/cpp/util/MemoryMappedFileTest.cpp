@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ TEST(mmfileTest, createCheck)
     const std::string name(makeTempFileName());
 
     ASSERT_NO_THROW({
-        m = MemoryMappedFile::createNew(name.c_str(), size);
+        m = MemoryMappedFile::createNew(name.c_str(), 0, size);
     });
 
     ASSERT_EQ(m->getMemorySize(), size);
@@ -60,7 +60,7 @@ TEST(mmfileTest, writeReadCheck)
     std::string name = makeTempFileName();
 
     ASSERT_NO_THROW({
-        m = MemoryMappedFile::createNew(name.c_str(), size);
+        m = MemoryMappedFile::createNew(name.c_str(), 0, size);
     });
 
     for (size_t n = 0; n < size; n++)

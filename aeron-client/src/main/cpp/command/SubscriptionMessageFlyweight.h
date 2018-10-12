@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,11 +53,8 @@ struct SubscriptionMessageDefn
     CorrelatedMessageDefn correlatedMessage;
     std::int64_t registrationCorrelationId;
     std::int32_t streamId;
-    struct
-    {
-        std::int32_t channelLength;
-        std::int8_t  channelData[1];
-    } channel;
+    std::int32_t channelLength;
+    std::int8_t  channelData[1];
 };
 #pragma pack(pop)
 
@@ -95,23 +92,23 @@ public:
 
     inline std::string channel() const
     {
-        return stringGet(offsetof(SubscriptionMessageDefn, channel));
+        return stringGet(offsetof(SubscriptionMessageDefn, channelLength));
     }
 
     inline this_t& channel(const std::string& value)
     {
-        stringPut(offsetof(SubscriptionMessageDefn, channel), value);
+        stringPut(offsetof(SubscriptionMessageDefn, channelLength), value);
         return *this;
     }
 
     util::index_t length()
     {
-        return offsetof(SubscriptionMessageDefn, channel.channelData) + m_struct.channel.channelLength;
+        return offsetof(SubscriptionMessageDefn, channelData) + m_struct.channelLength;
     }
 
 private:
     SubscriptionMessageDefn& m_struct;
 };
 
-}};
+}}
 #endif

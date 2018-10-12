@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ class CopyBroadcastReceiver
 public:
     CopyBroadcastReceiver(BroadcastReceiver& receiver) :
         m_receiver(receiver),
-        m_scratchBuffer(&m_scratch[0], m_scratch.size())
+        m_scratchBuffer(m_scratch)
     {
         while (m_receiver.receiveNext())
         {

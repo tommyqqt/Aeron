@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ public:
      */
     fragment_handler_t handler()
     {
-        return [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
+        return [this](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
         {
             this->onFragment(buffer, offset, length, header);
         };
@@ -82,7 +82,7 @@ private:
     fragment_handler_t m_delegate;
     std::unordered_map<std::int32_t, BufferBuilder> m_builderBySessionIdMap;
 
-    void onFragment(AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
+    inline void onFragment(AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
     {
         const std::uint8_t flags = header.flags();
 
@@ -94,7 +94,7 @@ private:
         {
             if ((flags & FrameDescriptor::BEGIN_FRAG) == FrameDescriptor::BEGIN_FRAG)
             {
-                auto result = m_builderBySessionIdMap.emplace(header.sessionId(), m_initialBufferLength);
+                auto result = m_builderBySessionIdMap.emplace(header.sessionId(), static_cast<std::uint32_t>(m_initialBufferLength));
                 BufferBuilder& builder = result.first->second;
 
                 builder
@@ -117,22 +117,8 @@ private:
                         {
                             const util::index_t msgLength = builder.limit() - DataFrameHeader::LENGTH;
                             AtomicBuffer msgBuffer(builder.buffer(), builder.limit());
-                            Header assemblyHeader(header);
 
-                            assemblyHeader.buffer(msgBuffer);
-                            assemblyHeader.offset(0);
-                            DataFrameHeader::DataFrameHeaderDefn& frame(
-                                msgBuffer.overlayStruct<DataFrameHeader::DataFrameHeaderDefn>());
-
-                            frame.frameLength = DataFrameHeader::LENGTH + msgLength;
-                            frame.sessionId = header.sessionId();
-                            frame.streamId = header.streamId();
-                            frame.termId = header.termId();
-                            frame.flags = FrameDescriptor::UNFRAGMENTED;
-                            frame.type = DataFrameHeader::HDR_TYPE_DATA;
-                            frame.termOffset = header.termOffset() - (frame.frameLength - header.frameLength());
-
-                            m_delegate(msgBuffer, DataFrameHeader::LENGTH, msgLength, assemblyHeader);
+                            m_delegate(msgBuffer, DataFrameHeader::LENGTH, msgLength, header);
 
                             builder.reset();
                         }

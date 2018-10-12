@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,14 +29,14 @@
 namespace aeron { namespace util {
 
 #ifdef _MSC_VER
-    #define SOURCEINFO __FUNCTION__,  " : "  __FILE__  " : " TOSTRING(__LINE__)
+    #define SOURCEINFO __FUNCTION__,  " : "  __FILENAME__  " : " TOSTRING(__LINE__)
     #if _MSC_VER >= 1900
         #define AERON_NOEXCEPT noexcept
     #else
         #define AERON_NOEXCEPT throw()
     #endif
 #else
-    #define SOURCEINFO  __PRETTY_FUNCTION__,  " : "  __FILE__  " : " TOSTRING(__LINE__)
+    #define SOURCEINFO  __PRETTY_FUNCTION__,  " : "  __FILENAME__  " : " TOSTRING(__LINE__)
     #define AERON_NOEXCEPT noexcept
 #endif
 
@@ -64,7 +64,7 @@ public:
 };
 
 #define DECLARE_SOURCED_EXCEPTION(exceptionName)                                            \
-            class exceptionName : public SourcedException                                   \
+            class exceptionName : public aeron::util::SourcedException                      \
             {                                                                               \
                 public:                                                                     \
                     exceptionName (const std::string &what, const std::string& function, const std::string& where)   \
@@ -81,6 +81,7 @@ DECLARE_SOURCED_EXCEPTION (IllegalArgumentException);
 DECLARE_SOURCED_EXCEPTION (IllegalStateException);
 DECLARE_SOURCED_EXCEPTION (DriverTimeoutException);
 DECLARE_SOURCED_EXCEPTION (ConductorServiceTimeoutException);
+DECLARE_SOURCED_EXCEPTION (UnknownSubscriptionException);
 
 class RegistrationException : public SourcedException
 {

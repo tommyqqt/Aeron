@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ public:
     {
     }
 
-    inline void wrap(ReadablePosition<X>& position)
+    inline void wrap(const ReadablePosition<X>& position)
     {
         m_impl.wrap(position.m_impl);
     }
@@ -37,12 +37,12 @@ public:
         return m_impl.id();
     }
 
-    inline std::int64_t get()
+    inline std::int64_t get() const
     {
         return m_impl.get();
     }
 
-    inline std::int64_t getVolatile()
+    inline std::int64_t getVolatile() const
     {
         return m_impl.getVolatile();
     }

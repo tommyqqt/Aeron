@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,12 @@
 
 #include <cstdint>
 
-#if defined(AERON_COMPILER_GCC) && defined(AERON_CPU_X64)
-    #include <concurrent/atomic/Atomic64_gcc_x86_64.h>
+#if defined(AERON_COMPILER_GCC)
+    #if defined(AERON_CPU_X64)
+        #include <concurrent/atomic/Atomic64_gcc_x86_64.h>
+    #else
+        #include <concurrent/atomic/Atomic64_gcc_cpp11.h>
+    #endif
 #elif defined(AERON_COMPILER_MSVC) && defined(AERON_CPU_X64)
     #include <concurrent/atomic/Atomic64_msvc.h>
 

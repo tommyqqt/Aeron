@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,17 +48,27 @@ namespace aeron { namespace concurrent { namespace logbuffer {
 *  +---------------------------------------------------------------+
 * </pre>
 *
-* The (B)egin and (E)nd flags are used for message fragmentation. R is for reserved bit.
+* The (B)egin and (E)nd flags are used for message fragmentation. (R) is for reserved bit.
 * Both are set for a message that does not span frames.
 */
 
 namespace FrameDescriptor {
 
-static const util::index_t FRAME_ALIGNMENT = 8;
+static const util::index_t FRAME_ALIGNMENT = 32;
 
 static const std::uint8_t BEGIN_FRAG = 0x80;
 static const std::uint8_t END_FRAG = 0x40;
 static const std::uint8_t UNFRAGMENTED = BEGIN_FRAG | END_FRAG;
+
+static const util::index_t ALIGNED_HEADER_LENGTH = 32;
+
+static const util::index_t VERSION_OFFSET = 4;
+static const util::index_t FLAGS_OFFSET = 5;
+static const util::index_t TYPE_OFFSET = 6;
+static const util::index_t LENGTH_OFFSET = 0;
+static const util::index_t TERM_OFFSET = 8;
+
+static const util::index_t MAX_MESSAGE_LENGTH = 16 * 1024 * 1024;
 
 inline static void checkHeaderLength(util::index_t length)
 {
@@ -80,10 +90,15 @@ inline static void checkMaxFrameLength(util::index_t length)
 
 inline static util::index_t computeMaxMessageLength(util::index_t capacity)
 {
-    return capacity / 8;
+    return std::min(capacity / 8, MAX_MESSAGE_LENGTH);
 }
 
-inline static util::index_t typeOffset(util::index_t frameOffset)
+inline static util::index_t computeExclusiveMaxMessageLength(util::index_t capacity)
+{
+    return std::min(capacity / 4, MAX_MESSAGE_LENGTH);
+}
+
+    inline static util::index_t typeOffset(util::index_t frameOffset)
 {
     return frameOffset + DataFrameHeader::TYPE_FIELD_OFFSET;
 }
@@ -106,6 +121,11 @@ inline static util::index_t termOffsetOffset(util::index_t frameOffset)
 inline static void frameType(AtomicBuffer& logBuffer, util::index_t frameOffset, std::uint16_t type)
 {
     logBuffer.putUInt16(typeOffset(frameOffset), type);
+}
+
+inline static std::uint16_t frameType(AtomicBuffer& logBuffer, util::index_t frameOffset)
+{
+    return logBuffer.getUInt16(frameOffset);
 }
 
 inline static void frameFlags(AtomicBuffer& logBuffer, util::index_t frameOffset, std::uint8_t flags)
@@ -135,7 +155,12 @@ inline static void frameLengthOrdered(AtomicBuffer& logBuffer, util::index_t fra
     logBuffer.putInt32Ordered(lengthOffset(frameOffset), frameLength);
 }
 
-};
+inline static std::uint8_t frameVersion(AtomicBuffer& logBuffer, util::index_t frameOffset)
+{
+    return logBuffer.getUInt8(frameOffset);
+}
+
+}
 
 }}}
 

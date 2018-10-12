@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@
 #include <command/PublicationMessageFlyweight.h>
 #include <command/RemoveMessageFlyweight.h>
 #include <command/SubscriptionMessageFlyweight.h>
+#include <command/DestinationMessageFlyweight.h>
+#include <command/CounterMessageFlyweight.h>
 #include <command/ControlProtocolEvents.h>
 
 namespace aeron {
@@ -68,6 +70,27 @@ public:
         return correlationId;
     }
 
+    std::int64_t addExclusivePublication(const std::string& channel, std::int32_t streamId)
+    {
+        std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
+
+        writeCommandToDriver([&](AtomicBuffer &buffer, util::index_t &length)
+        {
+            PublicationMessageFlyweight publicationMessage(buffer, 0);
+
+            publicationMessage.clientId(m_clientId);
+            publicationMessage.correlationId(correlationId);
+            publicationMessage.streamId(streamId);
+            publicationMessage.channel(channel);
+
+            length = publicationMessage.length();
+
+            return ControlProtocolEvents::ADD_EXCLUSIVE_PUBLICATION;
+        });
+
+        return correlationId;
+    }
+
     std::int64_t removePublication(std::int64_t registrationId)
     {
         std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
@@ -76,6 +99,7 @@ public:
         {
             RemoveMessageFlyweight removeMessage(buffer, 0);
 
+            removeMessage.clientId(m_clientId);
             removeMessage.correlationId(correlationId);
             removeMessage.registrationId(registrationId);
 
@@ -117,6 +141,7 @@ public:
         {
             RemoveMessageFlyweight removeMessage(buffer, 0);
 
+            removeMessage.clientId(m_clientId);
             removeMessage.correlationId(correlationId);
             removeMessage.registrationId(registrationId);
 
@@ -142,17 +167,121 @@ public:
         });
     }
 
+    std::int64_t addDestination(std::int64_t publicationRegistrationId, const std::string& channel)
+    {
+        std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
+
+        writeCommandToDriver([&](AtomicBuffer &buffer, util::index_t &length)
+        {
+            DestinationMessageFlyweight addMessage(buffer, 0);
+
+            addMessage.clientId(m_clientId);
+            addMessage.registrationId(publicationRegistrationId);
+            addMessage.correlationId(correlationId);
+            addMessage.channel(channel);
+
+            length = addMessage.length();
+
+            return ControlProtocolEvents::ADD_DESTINATION;
+        });
+
+        return correlationId;
+    }
+
+    std::int64_t removeDestination(std::int64_t publicationRegistrationId, const std::string& channel)
+    {
+        std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
+
+        writeCommandToDriver([&](AtomicBuffer &buffer, util::index_t &length)
+        {
+            DestinationMessageFlyweight removeMessage(buffer, 0);
+
+            removeMessage.clientId(m_clientId);
+            removeMessage.registrationId(publicationRegistrationId);
+            removeMessage.correlationId(correlationId);
+            removeMessage.channel(channel);
+
+            length = removeMessage.length();
+
+            return ControlProtocolEvents::REMOVE_DESTINATION;
+        });
+
+        return correlationId;
+    }
+
+    std::int64_t addCounter(std::int32_t typeId, const std::uint8_t *key, std::size_t keyLength, const std::string& label)
+    {
+        std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
+
+        writeCommandToDriver([&](AtomicBuffer &buffer, util::index_t &length)
+        {
+            CounterMessageFlyweight command(buffer, 0);
+
+            command.clientId(m_clientId);
+            command.correlationId(correlationId);
+            command.typeId(typeId);
+            command.keyBuffer(key, keyLength);
+            command.label(label);
+
+            length = command.length();
+
+            return ControlProtocolEvents::ADD_COUNTER;
+        });
+
+        return correlationId;
+    }
+
+    std::int64_t removeCounter(std::int64_t registrationId)
+    {
+        std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
+
+        writeCommandToDriver([&](AtomicBuffer &buffer, util::index_t &length)
+        {
+            RemoveMessageFlyweight command(buffer, 0);
+
+            command.clientId(m_clientId);
+            command.correlationId(correlationId);
+            command.registrationId(registrationId);
+
+            length = command.length();
+
+            return ControlProtocolEvents::REMOVE_COUNTER;
+        });
+
+        return correlationId;
+    }
+
+    std::int64_t clientClose()
+    {
+        std::int64_t correlationId = m_toDriverCommandBuffer.nextCorrelationId();
+
+        writeCommandToDriver([&](AtomicBuffer& buffer, util::index_t& length)
+        {
+            CorrelatedMessageFlyweight correlatedMessage(buffer, 0);
+
+            correlatedMessage.clientId(m_clientId);
+            correlatedMessage.correlationId(correlationId);
+
+            length = CORRELATED_MESSAGE_LENGTH;
+
+            return ControlProtocolEvents::CLIENT_CLOSE;
+        });
+
+        return correlationId;
+    }
+
 private:
     typedef std::array<std::uint8_t, 512> driver_proxy_command_buffer_t;
 
     ManyToOneRingBuffer& m_toDriverCommandBuffer;
     std::int64_t m_clientId;
 
-    inline void writeCommandToDriver(const std::function<util::index_t(AtomicBuffer&, util::index_t &)>& filler)
+    template <typename Filler>
+    inline void writeCommandToDriver(Filler&& filler)
     {
         AERON_DECL_ALIGNED(driver_proxy_command_buffer_t messageBuffer, 16);
-        AtomicBuffer buffer(&messageBuffer[0], messageBuffer.size());
-        util::index_t length = messageBuffer.size();
+        AtomicBuffer buffer(messageBuffer);
+        util::index_t length = buffer.capacity();
 
         util::index_t msgTypeId = filler(buffer, length);
 

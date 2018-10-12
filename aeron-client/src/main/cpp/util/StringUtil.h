@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,9 @@
 #include <sstream>
 #include <iostream>
 #include <type_traits>
+#include <iomanip>
+#include <locale>
+#include <stdarg.h>
 #include "Exceptions.h"
 
 namespace aeron { namespace util {
@@ -71,7 +74,43 @@ inline std::string toString (const value_t& value)
     return stream.str();
 }
 
-std::string strPrintf (const char* format, ...);
+template <typename value_t>
+inline std::string toStringWithCommas(const value_t& value)
+{
+    std::stringstream stream;
+
+    stream.imbue(std::locale(""));
+    stream << std::fixed << value;
+    return stream.str();
+}
+
+inline std::string strPrintf (const char* format, ...)
+{
+    const int BUFFER_SIZE = 128;
+    char buffer[BUFFER_SIZE];
+
+    va_list argp;
+    va_start(argp, format);
+    int len = vsnprintf(buffer, BUFFER_SIZE, format, argp);
+    va_end(argp);
+
+    if (len >= BUFFER_SIZE)
+    {
+        len++;
+        std::string output (len, ' ');
+
+        va_start(argp, format);
+        vsnprintf(&output[0], len, format, argp);
+        va_end(argp);
+
+        output.pop_back(); // remove trailing 0 char
+        return output;
+    }
+    else
+    {
+        return std::string(buffer);
+    }
+}
 
 namespace private_impl
 {
@@ -100,7 +139,7 @@ std::string strconcat (Ts... vs)
 inline bool continuationBarrier(const std::string& label)
 {
     bool result = false;
-    char response;
+    char response = '\0';
     std::cout << std::endl << label << " (y/n): ";
     std::cin >> response;
 
@@ -111,6 +150,16 @@ inline bool continuationBarrier(const std::string& label)
 
     return result;
 }
+
+template <typename T>
+static T fromString (const std::string &str)
+{
+    std::istringstream is(str);
+    T t;
+    is >> t;
+    return t;
+}
+
 
 }}
 

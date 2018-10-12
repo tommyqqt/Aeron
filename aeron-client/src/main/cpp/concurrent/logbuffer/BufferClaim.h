@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -84,6 +84,28 @@ public:
     }
 
     /**
+     * Get the value stored in the reserve space at the end of a data frame header.
+     *
+     * @return the value stored in the reserve space at the end of a data frame header.
+     */
+    inline std::int64_t reservedValue() const
+    {
+        return m_buffer.getInt64(DataFrameHeader::RESERVED_VALUE_FIELD_OFFSET);
+    }
+
+    /**
+     * Write the provided value into the reserved space at the end of the data frame header.
+     *
+     * @param value to be stored in the reserve space at the end of a data frame header.
+     * @return this for fluent API semantics.
+     */
+    inline this_t& reservedValue(const std::int64_t value)
+    {
+        m_buffer.putInt64(DataFrameHeader::RESERVED_VALUE_FIELD_OFFSET, value);
+        return *this;
+    }
+
+    /**
      * Commit the message to the log buffer so that is it available to subscribers.
      */
     inline void commit()
@@ -100,7 +122,7 @@ public:
         m_buffer.putInt32Ordered(0, m_buffer.capacity());
     }
 
-private:
+protected:
     AtomicBuffer m_buffer;
 };
 

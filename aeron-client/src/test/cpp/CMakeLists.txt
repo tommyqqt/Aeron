@@ -1,5 +1,5 @@
 #
-# Copyright 2014 - 2015 Real Logic Ltd.
+# Copyright 2014-2018 Real Logic Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,10 @@ set(TEST_SOURCE
     concurrent/MockAtomicBuffer.cpp)
 
 add_library(aeron_client_test STATIC ${TEST_SOURCE} ${TEST_HEADERS})
+target_include_directories(aeron_client_test
+    PUBLIC ${AERON_CLIENT_TEST_PATH}
+)
+target_link_libraries(aeron_client_test aeron_client)
 add_dependencies(aeron_client_test gmock)
 
 function(aeron_client_test name file)
@@ -35,6 +39,7 @@ endfunction()
 
 aeron_client_test(clientConductorTest ClientConductorTest.cpp)
 aeron_client_test(publicationTest PublicationTest.cpp)
+aeron_client_test(exclusivePublicationTest ExclusivePublicationTest.cpp)
 aeron_client_test(imageTest ImageTest.cpp)
 aeron_client_test(fragmentAssemblyTest FragmentAssemblerTest.cpp)
 aeron_client_test(commandTest command/CommandTest.cpp)
@@ -47,4 +52,10 @@ aeron_client_test(countersManagerTest concurrent/CountersManagerTest.cpp)
 aeron_client_test(termAppenderTest concurrent/TermAppenderTest.cpp)
 aeron_client_test(termReaderTest concurrent/TermReaderTest.cpp)
 aeron_client_test(termBlockScannerTest concurrent/TermBlockScannerTest.cpp)
+aeron_client_test(termRebuilderTest concurrent/TermRebuilderTest.cpp)
+aeron_client_test(termGapScannerTest concurrent/TermGapScannerTest.cpp)
+aeron_client_test(termScannerTest concurrent/TermScannerTest.cpp)
 aeron_client_test(manyToOneRingBufferTest concurrent/ManyToOneRingBufferTest.cpp)
+aeron_client_test(distinctErrorLogTest concurrent/DistinctErrorLogTest.cpp)
+aeron_client_test(errorLogReaderTest concurrent/ErrorLogReaderTest.cpp)
+aeron_client_test(oneToOneRingBuffertest concurrent/OneToOneRingBufferTest.cpp)

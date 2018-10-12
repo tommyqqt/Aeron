@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@ namespace aeron { namespace concurrent { namespace logbuffer {
 
 namespace LogBufferDescriptor {
 
-static const std::int32_t CLEAN = 0;
-static const std::int32_t NEEDS_CLEANING = 1;
-
-static const util::index_t TERM_MIN_LENGTH = 64 * 1024;
+static const std::int32_t TERM_MIN_LENGTH = 64 * 1024;
+static const std::int32_t TERM_MAX_LENGTH = 1024 * 1024 * 1024;
+static const std::int32_t PAGE_MIN_SIZE = 4 * 1024;
+static const std::int32_t PAGE_MAX_SIZE = 1024 * 1024 * 1024;
 
 #if defined(__GNUC__) || _MSC_VER >= 1900
 constexpr static const int PARTITION_COUNT = 3;
@@ -55,35 +55,36 @@ static const int PARTITION_COUNT = 3;
  *  +----------------------------+
  *  |           Term 2           |
  *  +----------------------------+
- *  |      Term Meta Data 0      |
- *  +----------------------------+
- *  |      Term Meta Data 1      |
- *  +----------------------------+
- *  |      Term Meta Data 2      |
- *  +----------------------------+
  *  |        Log Meta Data       |
  *  +----------------------------+
  * </pre>
  */
 
-static const util::index_t TERM_TAIL_COUNTER_OFFSET = (util::BitUtil::CACHE_LINE_LENGTH * 2);
-static const util::index_t TERM_STATUS_OFFSET = (util::BitUtil::CACHE_LINE_LENGTH * 2) * 2;
-static const util::index_t TERM_META_DATA_LENGTH = (util::BitUtil::CACHE_LINE_LENGTH * 2) * 3;
-
-static const util::index_t LOG_META_DATA_SECTION_INDEX = PARTITION_COUNT * 2;
+static const util::index_t LOG_META_DATA_SECTION_INDEX = PARTITION_COUNT;
 
 /**
  * <pre>
  *   0                   1                   2                   3
  *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
  *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  |                   Active Partition Index                      |
+ *  |                       Tail Counter 0                          |
+ *  |                                                               |
+ *  +---------------------------------------------------------------+
+ *  |                       Tail Counter 1                          |
+ *  |                                                               |
+ *  +---------------------------------------------------------------+
+ *  |                       Tail Counter 2                          |
+ *  |                                                               |
+ *  +---------------------------------------------------------------+
+ *  |                      Active Term Count                        |
  *  +---------------------------------------------------------------+
  *  |                      Cache Line Padding                      ...
  * ...                                                              |
  *  +---------------------------------------------------------------+
- *  |                       Time of Last SM                         |
+ *  |                    End of Stream Position                     |
  *  |                                                               |
+ *  +---------------------------------------------------------------+
+ *  |                        Is Connected                           |
  *  +---------------------------------------------------------------+
  *  |                      Cache Line Padding                      ...
  * ...                                                              |
@@ -96,6 +97,10 @@ static const util::index_t LOG_META_DATA_SECTION_INDEX = PARTITION_COUNT * 2;
  *  |                  Default Frame Header Length                  |
  *  +---------------------------------------------------------------+
  *  |                          MTU Length                           |
+ *  +---------------------------------------------------------------+
+ *  |                         Term Length                           |
+ *  +---------------------------------------------------------------+
+ *  |                          Page Size                            |
  *  +---------------------------------------------------------------+
  *  |                      Cache Line Padding                      ...
  * ...                                                              |
@@ -112,27 +117,36 @@ static const util::index_t LOG_DEFAULT_FRAME_HEADER_MAX_LENGTH = util::BitUtil::
 #pragma pack(4)
 struct LogMetaDataDefn
 {
-    std::int32_t activePartitionIndex;
-    std::int8_t pad1[(2 * util::BitUtil::CACHE_LINE_LENGTH) - sizeof(std::int32_t)];
-    std::int64_t timeOfLastSm;
-    std::int8_t pad2[(2 * util::BitUtil::CACHE_LINE_LENGTH) - sizeof(std::int64_t)];
+    std::int64_t termTailCounters[PARTITION_COUNT];
+    std::int32_t activeTermCount;
+    std::int8_t pad1[(2 * util::BitUtil::CACHE_LINE_LENGTH) - ((PARTITION_COUNT * sizeof(std::int64_t)) + sizeof(std::int32_t))];
+    std::int64_t endOfStreamPosition;
+    std::int32_t isConnected;
+    std::int8_t pad2[(2 * util::BitUtil::CACHE_LINE_LENGTH) - (sizeof(std::int64_t) + sizeof(std::int32_t))];
     std::int64_t correlationId;
     std::int32_t initialTermId;
     std::int32_t defaultFrameHeaderLength;
     std::int32_t mtuLength;
-    std::int8_t pad3[(util::BitUtil::CACHE_LINE_LENGTH) - (5 * sizeof(std::int32_t))];
+    std::int32_t termLength;
+    std::int32_t pageSize;
+    std::int8_t pad3[(util::BitUtil::CACHE_LINE_LENGTH) - (7 * sizeof(std::int32_t))];
 };
 #pragma pack(pop)
 
-static const util::index_t LOG_ACTIVE_PARTITION_INDEX_OFFSET = offsetof(LogMetaDataDefn, activePartitionIndex);
-static const util::index_t LOG_TIME_OF_LAST_SM_OFFSET = offsetof(LogMetaDataDefn, timeOfLastSm);
-static const util::index_t LOG_INITIAL_TERM_ID_OFFSET = offsetof(LogMetaDataDefn, initialTermId);
-static const util::index_t LOG_DEFAULT_FRAME_HEADER_LENGTH_OFFSET = offsetof(LogMetaDataDefn, defaultFrameHeaderLength);
-static const util::index_t LOG_MTU_LENGTH_OFFSET = offsetof(LogMetaDataDefn, mtuLength);
-static const util::index_t LOG_DEFAULT_FRAME_HEADER_OFFSET = sizeof(LogMetaDataDefn);
-static const util::index_t LOG_META_DATA_LENGTH = sizeof(LogMetaDataDefn) + LOG_DEFAULT_FRAME_HEADER_MAX_LENGTH;
+static const util::index_t TERM_TAIL_COUNTER_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, termTailCounters);
 
-inline static void checkTermLength(std::int64_t termLength)
+static const util::index_t LOG_ACTIVE_TERM_COUNT_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, activeTermCount);
+static const util::index_t LOG_END_OF_STREAM_POSITION_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, endOfStreamPosition);
+static const util::index_t LOG_IS_CONNECTED_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, isConnected);
+static const util::index_t LOG_INITIAL_TERM_ID_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, initialTermId);
+static const util::index_t LOG_DEFAULT_FRAME_HEADER_LENGTH_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, defaultFrameHeaderLength);
+static const util::index_t LOG_MTU_LENGTH_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, mtuLength);
+static const util::index_t LOG_TERM_LENGTH_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, termLength);
+static const util::index_t LOG_PAGE_SIZE_OFFSET = (util::index_t)offsetof(LogMetaDataDefn, pageSize);
+static const util::index_t LOG_DEFAULT_FRAME_HEADER_OFFSET = (util::index_t)sizeof(LogMetaDataDefn);
+static const util::index_t LOG_META_DATA_LENGTH = 4 * 1024;
+
+inline static void checkTermLength(std::int32_t termLength)
 {
     if (termLength < TERM_MIN_LENGTH)
     {
@@ -141,22 +155,40 @@ inline static void checkTermLength(std::int64_t termLength)
                 TERM_MIN_LENGTH, termLength), SOURCEINFO);
     }
 
-    if ((termLength & (FrameDescriptor::FRAME_ALIGNMENT - 1)) != 0)
+    if (termLength > TERM_MAX_LENGTH)
     {
         throw util::IllegalStateException(
-            util::strPrintf("Term length not a multiple of %d, length=%d",
-                FrameDescriptor::FRAME_ALIGNMENT, termLength), SOURCEINFO);
+            util::strPrintf("Term length greater than max size of %d, length=%d",
+                TERM_MAX_LENGTH, termLength), SOURCEINFO);
+    }
+
+    if (!util::BitUtil::isPowerOfTwo(termLength))
+    {
+        throw util::IllegalStateException(
+            util::strPrintf("Term length not a power of 2, length=%d", termLength), SOURCEINFO);
     }
 }
 
-inline static void checkMetaDataBuffer(AtomicBuffer &buffer)
+inline static void checkPageSize(std::int32_t pageSize)
 {
-    const util::index_t capacity = buffer.capacity();
-    if (capacity < TERM_META_DATA_LENGTH)
+    if (pageSize < PAGE_MIN_SIZE)
     {
         throw util::IllegalStateException(
-            util::strPrintf("Meta Data buffer capacity less than min size of %d, capacity=%d",
-                TERM_META_DATA_LENGTH, capacity), SOURCEINFO);
+            util::strPrintf("Page size less than min size of %d, size=%d",
+                PAGE_MIN_SIZE, pageSize), SOURCEINFO);
+    }
+
+    if (pageSize > PAGE_MAX_SIZE)
+    {
+        throw util::IllegalStateException(
+            util::strPrintf("Page Size greater than max size of %d, size=%d",
+                PAGE_MAX_SIZE, pageSize), SOURCEINFO);
+    }
+
+    if (!util::BitUtil::isPowerOfTwo(pageSize))
+    {
+        throw util::IllegalStateException(
+            util::strPrintf("Page size not a power of 2, size=%d", pageSize), SOURCEINFO);
     }
 }
 
@@ -170,43 +202,75 @@ inline static std::int32_t mtuLength(AtomicBuffer& logMetaDataBuffer)
     return logMetaDataBuffer.getInt32(LOG_MTU_LENGTH_OFFSET);
 }
 
-inline static std::int32_t activePartitionIndex(AtomicBuffer& logMetaDataBuffer)
+inline static std::int32_t termLength(AtomicBuffer& logMetaDataBuffer)
 {
-    return logMetaDataBuffer.getInt32Volatile(LOG_ACTIVE_PARTITION_INDEX_OFFSET);
+    return logMetaDataBuffer.getInt32(LOG_TERM_LENGTH_OFFSET);
 }
 
-inline static void activePartitionIndex(AtomicBuffer& logMetaDataBuffer, std::int32_t activeTermId)
+inline static std::int32_t pageSize(AtomicBuffer& logMetaDataBuffer)
 {
-    logMetaDataBuffer.putInt32Ordered(LOG_ACTIVE_PARTITION_INDEX_OFFSET, activeTermId);
+    return logMetaDataBuffer.getInt32(LOG_PAGE_SIZE_OFFSET);
+}
+
+inline static std::int32_t activeTermCount(AtomicBuffer& logMetaDataBuffer)
+{
+    return logMetaDataBuffer.getInt32Volatile(LOG_ACTIVE_TERM_COUNT_OFFSET);
+}
+
+inline static void activeTermCountOrdered(AtomicBuffer& logMetaDataBuffer, std::int32_t activeTermId)
+{
+    logMetaDataBuffer.putInt32Ordered(LOG_ACTIVE_TERM_COUNT_OFFSET, activeTermId);
+}
+
+inline static bool casActiveTermCount(
+    AtomicBuffer& logMetaDataBuffer, std::int32_t expectedTermCount, std::int32_t updateTermCount)
+{
+    return logMetaDataBuffer.compareAndSetInt32(LOG_ACTIVE_TERM_COUNT_OFFSET, expectedTermCount, updateTermCount);
 }
 
 inline static int nextPartitionIndex(int currentIndex) AERON_NOEXCEPT
 {
-    static_assert(PARTITION_COUNT==3, "PARTITION_COUNT must be 3");
-    return util::BitUtil::fastMod3(currentIndex + 1);
+    return (currentIndex + 1) % PARTITION_COUNT;
 }
 
 inline static int previousPartitionIndex(int currentIndex) AERON_NOEXCEPT
 {
-    static_assert(PARTITION_COUNT==3, "PARTITION_COUNT must be 3");
-    return util::BitUtil::fastMod3(currentIndex + (PARTITION_COUNT - 1));
+    return (currentIndex + (PARTITION_COUNT - 1)) % PARTITION_COUNT;
 }
 
-inline static std::int64_t timeOfLastSm(AtomicBuffer& logMetaDataBuffer) AERON_NOEXCEPT
+inline static bool isConnected(AtomicBuffer &logMetaDataBuffer) AERON_NOEXCEPT
 {
-    return logMetaDataBuffer.getInt64Volatile(LOG_TIME_OF_LAST_SM_OFFSET);
+    return (logMetaDataBuffer.getInt32Volatile(LOG_IS_CONNECTED_OFFSET) == 1);
+}
+
+inline static void isConnected(AtomicBuffer &logMetaDataBuffer, bool isConnected) AERON_NOEXCEPT
+{
+    logMetaDataBuffer.putInt32Ordered(LOG_IS_CONNECTED_OFFSET, isConnected ? 1 : 0);
+}
+
+inline static std::int64_t endOfStreamPosition(AtomicBuffer &logMetaDataBuffer) AERON_NOEXCEPT
+{
+    return logMetaDataBuffer.getInt64Volatile(LOG_END_OF_STREAM_POSITION_OFFSET);
+}
+
+inline static void endOfStreamPosition(AtomicBuffer &logMetaDataBuffer, std::int64_t position) AERON_NOEXCEPT
+{
+    logMetaDataBuffer.putInt64Ordered(LOG_END_OF_STREAM_POSITION_OFFSET, position);
 }
 
 inline static int indexByTerm(std::int32_t initialTermId, std::int32_t activeTermId) AERON_NOEXCEPT
 {
-    static_assert(PARTITION_COUNT==3, "PARTITION_COUNT must be 3");
-    return util::BitUtil::fastMod3(activeTermId - initialTermId);
+    return (activeTermId - initialTermId) % PARTITION_COUNT;
+}
+
+inline static int indexByTermCount(std::int64_t termCount) AERON_NOEXCEPT
+{
+    return static_cast<int>(termCount % PARTITION_COUNT);
 }
 
 inline static int indexByPosition(std::int64_t position, std::int32_t positionBitsToShift) AERON_NOEXCEPT
 {
-    static_assert(PARTITION_COUNT==3, "PARTITION_COUNT must be 3");
-    return (int)(util::BitUtil::fastMod3((std::uint64_t)position >> positionBitsToShift));
+    return (int)((std::uint64_t)position >> positionBitsToShift) % PARTITION_COUNT;
 }
 
 inline static std::int64_t computePosition(
@@ -225,23 +289,21 @@ inline static std::int64_t computeTermBeginPosition(
     return termCount << positionBitsToShift;
 }
 
-inline static std::int64_t computeLogLength(std::int64_t termLength)
+inline static std::int64_t rawTailVolatile(AtomicBuffer& logMetaDataBuffer)
 {
-    return (termLength * PARTITION_COUNT) + (TERM_META_DATA_LENGTH * PARTITION_COUNT) + LOG_META_DATA_LENGTH;
+    const std::int32_t partitionIndex = indexByTermCount(activeTermCount(logMetaDataBuffer));
+    return logMetaDataBuffer.getInt64Volatile(TERM_TAIL_COUNTER_OFFSET + (partitionIndex * sizeof(std::int64_t)));
 }
 
-inline static std::int64_t computeTermLength(std::int64_t logLength)
+inline static std::int64_t rawTail(AtomicBuffer& logMetaDataBuffer)
 {
-    const std::int64_t metaDataSectionLength = (TERM_META_DATA_LENGTH * PARTITION_COUNT) + LOG_META_DATA_LENGTH;
-    return (logLength - metaDataSectionLength) / 3;
+    const std::int32_t partitionIndex = indexByTermCount(activeTermCount(logMetaDataBuffer));
+    return logMetaDataBuffer.getInt64(TERM_TAIL_COUNTER_OFFSET + (partitionIndex * sizeof(std::int64_t)));
 }
 
-inline static AtomicBuffer defaultFrameHeader(AtomicBuffer& logMetaDataBuffer)
+inline static std::int64_t rawTail(AtomicBuffer& logMetaDataBuffer, int partitionIndex)
 {
-    std::uint8_t *header =
-        logMetaDataBuffer.buffer() + LOG_DEFAULT_FRAME_HEADER_OFFSET;
-
-    return AtomicBuffer(header, DataFrameHeader::LENGTH);
+    return logMetaDataBuffer.getInt64(TERM_TAIL_COUNTER_OFFSET + (partitionIndex * sizeof(std::int64_t)));
 }
 
 inline static std::int32_t termId(const std::int64_t rawTail)
@@ -256,7 +318,49 @@ inline static std::int32_t termOffset(const std::int64_t rawTail, const std::int
     return static_cast<std::int32_t>(std::min(tail, termLength));
 }
 
-};
+inline static bool casRawTail(
+    AtomicBuffer& logMetaDataBuffer, int partitionIndex, std::int64_t expectedRawTail, std::int64_t updateRawTail)
+{
+    return logMetaDataBuffer.compareAndSetInt64(
+        TERM_TAIL_COUNTER_OFFSET + (partitionIndex * sizeof(std::int64_t)), expectedRawTail, updateRawTail);
+}
+
+inline static AtomicBuffer defaultFrameHeader(AtomicBuffer& logMetaDataBuffer)
+{
+    std::uint8_t *header = logMetaDataBuffer.buffer() + LOG_DEFAULT_FRAME_HEADER_OFFSET;
+
+    return AtomicBuffer(header, DataFrameHeader::LENGTH);
+}
+
+inline static void rotateLog(AtomicBuffer& logMetaDataBuffer, std::int32_t currentTermCount, std::int32_t currentTermId)
+{
+    const std::int32_t nextTermId = currentTermId + 1;
+    const std::int32_t nextTermCount = currentTermCount + 1;
+    const int nextIndex = indexByTermCount(nextTermCount);
+    const std::int32_t expectedTermId = nextTermId - PARTITION_COUNT;
+
+    std::int64_t rawTail;
+    do
+    {
+        rawTail = LogBufferDescriptor::rawTail(logMetaDataBuffer, nextIndex);
+        if (expectedTermId != LogBufferDescriptor::termId(rawTail))
+        {
+            break;
+        }
+    }
+    while (!LogBufferDescriptor::casRawTail(
+        logMetaDataBuffer, nextIndex, rawTail, (static_cast<std::int64_t>(nextTermId)) << 32));
+
+    LogBufferDescriptor::casActiveTermCount(logMetaDataBuffer, currentTermCount, nextTermCount);
+}
+
+inline static void initializeTailWithTermId(AtomicBuffer& logMetaDataBuffer, int partitionIndex, std::int32_t termId)
+{
+    logMetaDataBuffer.putInt64(
+        TERM_TAIL_COUNTER_OFFSET + (partitionIndex * sizeof(std::int64_t)), (static_cast<std::int64_t>(termId)) << 32);
+}
+
+}
 
 }}}
 

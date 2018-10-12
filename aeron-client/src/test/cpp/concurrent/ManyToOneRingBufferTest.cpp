@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -362,7 +362,7 @@ TEST_F(ManyToOneRingBufferTest, shouldCopeWithExceptionFromHandler)
     {
         m_ringBuffer.read(handler);
     }
-    catch (std::runtime_error ignored)
+    catch (const std::runtime_error&)
     {
         exceptionReceived = true;
     }
@@ -602,7 +602,7 @@ TEST(ManyToOneRingBufferConcurrentTest, shouldExchangeMessages)
             thr.join();
         }
     }
-    catch (util::OutOfBoundsException& e)
+    catch (const util::OutOfBoundsException& e)
     {
         printf("EXCEPTION %s at %s\n", e.what(), e.where());
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 #include <util/Index.h>
 #include <concurrent/AtomicBuffer.h>
 #include "LogBufferDescriptor.h"
-#include "LogBufferPartition.h"
 #include "Header.h"
 
 namespace aeron {
@@ -55,7 +54,7 @@ typedef std::function<void(
  * @param exception that has occurred.
  */
 typedef std::function<void(
-    std::exception& exception)> exception_handler_t;
+    const std::exception& exception)> exception_handler_t;
 
 namespace TermReader {
 
@@ -65,11 +64,12 @@ struct ReadOutcome
     int fragmentsRead;
 };
 
+template <typename F>
 inline void read(
     ReadOutcome& outcome,
     AtomicBuffer& termBuffer,
     std::int32_t termOffset,
-    const fragment_handler_t & handler,
+    F&& handler,
     int fragmentsLimit,
     Header& header,
     const exception_handler_t & exceptionHandler)
@@ -103,7 +103,7 @@ inline void read(
         }
         while (outcome.fragmentsRead < fragmentsLimit && termOffset < capacity);
     }
-    catch (std::exception ex)
+    catch (const std::exception& ex)
     {
         exceptionHandler(ex);
     }

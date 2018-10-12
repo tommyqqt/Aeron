@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,14 +40,31 @@ public:
     {
     }
 
-    AtomicBuffer(std::uint8_t *buffer, util::index_t length) :
-        m_buffer(buffer), m_length(length)
+    AtomicBuffer(std::uint8_t *buffer, size_t length) :
+        m_buffer(buffer), m_length(static_cast<util::index_t>(length))
     {
+#if !defined(DISABLE_BOUNDS_CHECKS)
+        if (AERON_COND_EXPECT(length > std::numeric_limits<util::index_t>::max(), true))
+        {
+            throw aeron::util::OutOfBoundsException(
+                aeron::util::strPrintf("Length Out of Bounds[%p]. Length: %lld", this, static_cast<long long>(length)),
+                SOURCEINFO);
+        }
+#endif
     }
 
-    AtomicBuffer(std::uint8_t *buffer, util::index_t length, std::uint8_t initialValue) :
-        m_buffer(buffer), m_length(length)
+    AtomicBuffer(std::uint8_t *buffer, size_t length, std::uint8_t initialValue) :
+        m_buffer(buffer), m_length(static_cast<util::index_t>(length))
     {
+#if !defined(DISABLE_BOUNDS_CHECKS)
+        if (AERON_COND_EXPECT(length > std::numeric_limits<util::index_t>::max(), true))
+        {
+            throw aeron::util::OutOfBoundsException(
+                aeron::util::strPrintf("Length Out of Bounds[%p]. Length: %lld", this, static_cast<long long>(length)),
+                SOURCEINFO);
+        }
+#endif
+
         setMemory(0, (size_t)length, initialValue);
     }
 
@@ -76,13 +93,22 @@ public:
     // this class does not own the memory. It simply overlays it.
     virtual ~AtomicBuffer() = default;
 
-    inline void wrap(std::uint8_t* buffer, util::index_t length)
+    inline void wrap(std::uint8_t* buffer, size_t length)
     {
+#if !defined(DISABLE_BOUNDS_CHECKS)
+        if (AERON_COND_EXPECT(length > std::numeric_limits<util::index_t>::max(), true))
+        {
+            throw aeron::util::OutOfBoundsException(
+                aeron::util::strPrintf("Length Out of Bounds[%p]. Length: %lld", this, static_cast<long long>(length)),
+                SOURCEINFO);
+        }
+#endif
+
         m_buffer = buffer;
-        m_length = length;
+        m_length = static_cast<util::index_t>(length);
     }
 
-    inline void wrap(AtomicBuffer& buffer)
+    inline void wrap(const AtomicBuffer& buffer)
     {
         m_buffer = buffer.m_buffer;
         m_length = buffer.m_length;
@@ -91,6 +117,7 @@ public:
     template<size_t N>
     inline void wrap(std::array<std::uint8_t, N>& buffer)
     {
+        static_assert(N <= std::numeric_limits<util::index_t>::max(), "Requires the array to have a size that fits in an index_t");
         m_buffer = buffer.data();
         m_length = static_cast<util::index_t>(N);
     }
@@ -100,9 +127,18 @@ public:
         return m_length;
     }
 
-    inline void capacity(util::index_t length)
+    inline void capacity(size_t length)
     {
-        m_length = length;
+#if !defined(DISABLE_BOUNDS_CHECKS)
+        if (AERON_COND_EXPECT(length > std::numeric_limits<util::index_t>::max(), true))
+        {
+            throw aeron::util::OutOfBoundsException(
+                aeron::util::strPrintf("Length Out of Bounds[%p]. Length: %lld", this, static_cast<long long>(length)),
+                SOURCEINFO);
+        }
+#endif
+
+        m_length = static_cast<util::index_t>(length);
     }
 
     inline std::uint8_t *buffer() const
@@ -118,14 +154,14 @@ public:
     }
 
     template <typename struct_t>
-    struct_t& overlayStruct (util::index_t offset)
+    struct_t& overlayStruct(util::index_t offset)
     {
         boundsCheck(offset, sizeof(struct_t));
         return *reinterpret_cast<struct_t*>(m_buffer + offset);
     }
 
     template <typename struct_t>
-    const struct_t& overlayStruct (util::index_t offset) const
+    const struct_t& overlayStruct(util::index_t offset) const
     {
         boundsCheck(offset, sizeof(struct_t));
         return *reinterpret_cast<struct_t*>(m_buffer + offset);
@@ -155,7 +191,19 @@ public:
         return *reinterpret_cast<std::int32_t *>(m_buffer + offset);
     }
 
-    inline COND_MOCK_VIRTUAL std::uint16_t getUInt16(util::index_t offset)
+    inline COND_MOCK_VIRTUAL std::int16_t getInt16(util::index_t offset) const
+    {
+        boundsCheck(offset, sizeof(std::int16_t));
+        return *reinterpret_cast<std::int16_t *>(m_buffer + offset);
+    }
+
+    inline COND_MOCK_VIRTUAL void putInt16(util::index_t offset, std::int16_t v)
+    {
+        boundsCheck(offset, sizeof(std::int16_t));
+        *reinterpret_cast<std::int16_t *>(m_buffer + offset) = v;
+    }
+
+    inline COND_MOCK_VIRTUAL std::uint16_t getUInt16(util::index_t offset) const
     {
         boundsCheck(offset, sizeof(std::uint16_t));
         return *reinterpret_cast<std::uint16_t *>(m_buffer + offset);
@@ -167,7 +215,7 @@ public:
         *reinterpret_cast<std::uint16_t *>(m_buffer + offset) = v;
     }
 
-    inline std::uint8_t getUInt8(util::index_t offset)
+    inline std::uint8_t getUInt8(util::index_t offset) const
     {
         boundsCheck(offset, sizeof(std::uint8_t));
         return *reinterpret_cast<std::uint8_t *>(m_buffer + offset);
@@ -261,7 +309,8 @@ public:
         return atomic::getAndAddInt32((volatile std::int32_t*)(m_buffer + offset), delta);
     }
 
-    inline COND_MOCK_VIRTUAL void putBytes(util::index_t index, concurrent::AtomicBuffer& srcBuffer, util::index_t srcIndex, util::index_t length)
+    inline COND_MOCK_VIRTUAL void putBytes(
+        util::index_t index, const concurrent::AtomicBuffer& srcBuffer, util::index_t srcIndex, util::index_t length)
     {
         boundsCheck(index, length);
         srcBuffer.boundsCheck(srcIndex, length);
@@ -286,59 +335,70 @@ public:
         ::memset(m_buffer + offset, value, length);
     }
 
-    // Note: I am assuming that std::string is utf8 encoded
-    // TODO: add std::wstring support
-    inline std::string getStringUtf8(util::index_t offset) const
+    inline std::string getString(util::index_t offset) const
     {
-        std::int32_t length = getInt32(offset);
-        return getStringUtf8WithoutLength(offset + sizeof(std::int32_t), (size_t)length);
+        std::int32_t length;
+
+        boundsCheck(offset, sizeof(length));
+        ::memcpy(reinterpret_cast<char *>(&length), m_buffer + offset, sizeof(length));
+
+        return getStringWithoutLength(offset + sizeof(std::int32_t), (size_t) length);
     }
 
-    inline std::string getStringUtf8WithoutLength(util::index_t offset, size_t length) const
+    inline std::string getStringWithoutLength(util::index_t offset, size_t length) const
     {
         boundsCheck(offset, length);
         return std::string(m_buffer + offset, m_buffer + offset + length);
     }
 
-    inline std::int32_t getStringUtf8Length(util::index_t offset) const
+    inline std::int32_t getStringLength(util::index_t offset) const
     {
-        return getInt32(offset);
+        std::int32_t length;
+
+        boundsCheck(offset, sizeof(length));
+        ::memcpy(reinterpret_cast<char *>(&length), m_buffer + offset, sizeof(length));
+
+        return length;
     }
 
-    std::int32_t putStringUtf8(util::index_t offset, const std::string& value)
+    std::int32_t putString(util::index_t offset, const std::string &value)
     {
         std::int32_t length = static_cast<std::int32_t>(value.length());
 
-        boundsCheck(offset, value.length() + sizeof(std::int32_t));
+        boundsCheck(offset, value.length() + sizeof(length));
 
-        putInt32(offset, length);
-        ::memcpy(m_buffer + offset + sizeof(std::int32_t), value.c_str(), value.length());
+        ::memcpy(m_buffer + offset, reinterpret_cast<const char *>(&length), sizeof(length));
+        ::memcpy(m_buffer + offset + sizeof(length), value.c_str(), value.length());
 
         return static_cast<std::int32_t>(sizeof(std::int32_t)) + length;
     }
 
-    std::int32_t putStringUtf8WithoutLength(util::index_t offset, const std::string& value)
+    std::int32_t COND_MOCK_VIRTUAL putStringWithoutLength(util::index_t offset, const std::string &value)
     {
         boundsCheck(offset, value.length());
         ::memcpy(m_buffer + offset, value.c_str(), value.length());
         return static_cast<std::int32_t>(value.length());
     }
 
-private:
-    std::uint8_t *m_buffer;
-    util::index_t m_length;
-
-    inline void boundsCheck(util::index_t index, util::index_t length) const
+    inline void boundsCheck(util::index_t index, std::uint64_t length) const
     {
 #if !defined(DISABLE_BOUNDS_CHECKS)
-        if (AERON_COND_EXPECT((index + length) > m_length, false))
+        // This check disallows negative indices and makes sure the
+        if (AERON_COND_EXPECT(index < 0 || (std::uint64_t)m_length - index < length, false))
         {
-            throw util::OutOfBoundsException(
-                util::strPrintf("Index Out of Bounds[%p]. Index: %d + %d Capacity: %d", this, index, length, m_length),
+            throw aeron::util::OutOfBoundsException(
+                aeron::util::strPrintf("Index Out of Bounds[%p]. Index: %d + %d Capacity: %d", this, index, length, m_length),
                 SOURCEINFO);
         }
 #endif
     }
+
+private:
+    // The internal length type used by the atomic buffer
+    typedef std::uint32_t length_t;
+
+    std::uint8_t *m_buffer;
+    length_t m_length;
 };
 
 }}

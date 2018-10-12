@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@
 using namespace aeron::util;
 using namespace aeron;
 
-static const std::string CHANNEL = "udp://localhost:40123";
+static const std::string CHANNEL = "aeron:udp?endpoint=localhost:40123";
 static const std::int32_t STREAM_ID = 10;
 static const std::int32_t SESSION_ID = 200;
 static const std::int32_t TERM_LENGTH = LogBufferDescriptor::TERM_MIN_LENGTH;
@@ -103,7 +103,11 @@ TEST_F(FragmentAssemblerTest, shouldPassThroughUnfragmentedMessage)
         EXPECT_EQ(header.frameLength(), DataFrameHeader::LENGTH + msgLength);
         EXPECT_EQ(header.flags(), FrameDescriptor::UNFRAGMENTED);
         EXPECT_EQ(header.position(),
-            LogBufferDescriptor::computePosition(ACTIVE_TERM_ID, header.termOffset() + header.frameLength(), POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID));
+            LogBufferDescriptor::computePosition(
+                ACTIVE_TERM_ID,
+                BitUtil::align(header.termOffset() + header.frameLength(), FrameDescriptor::FRAME_ALIGNMENT),
+                POSITION_BITS_TO_SHIFT,
+                INITIAL_TERM_ID));
         verifyPayload(buffer, offset, length);
     };
 
@@ -125,11 +129,15 @@ TEST_F(FragmentAssemblerTest, shouldReassembleFromTwoFragments)
         EXPECT_EQ(header.streamId(), STREAM_ID);
         EXPECT_EQ(header.termId(), ACTIVE_TERM_ID);
         EXPECT_EQ(header.initialTermId(), INITIAL_TERM_ID);
-        EXPECT_EQ(header.termOffset(), 0);
-        EXPECT_EQ(header.frameLength(), DataFrameHeader::LENGTH + msgLength * 2);
-        EXPECT_EQ(header.flags(), FrameDescriptor::UNFRAGMENTED);
+        EXPECT_EQ(header.termOffset(), MTU_LENGTH);
+        EXPECT_EQ(header.frameLength(), DataFrameHeader::LENGTH + msgLength);
+        EXPECT_EQ(header.flags(), FrameDescriptor::END_FRAG);
         EXPECT_EQ(header.position(),
-            LogBufferDescriptor::computePosition(ACTIVE_TERM_ID, header.termOffset() + header.frameLength(), POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID));
+            LogBufferDescriptor::computePosition(
+                ACTIVE_TERM_ID,
+                BitUtil::align(header.termOffset() + header.frameLength(), FrameDescriptor::FRAME_ALIGNMENT),
+                POSITION_BITS_TO_SHIFT,
+                INITIAL_TERM_ID));
         verifyPayload(buffer, offset, length);
     };
 
@@ -159,11 +167,15 @@ TEST_F(FragmentAssemblerTest, shouldReassembleFromThreeFragments)
         EXPECT_EQ(header.streamId(), STREAM_ID);
         EXPECT_EQ(header.termId(), ACTIVE_TERM_ID);
         EXPECT_EQ(header.initialTermId(), INITIAL_TERM_ID);
-        EXPECT_EQ(header.termOffset(), 0);
-        EXPECT_EQ(header.frameLength(), DataFrameHeader::LENGTH + msgLength * 3);
-        EXPECT_EQ(header.flags(), FrameDescriptor::UNFRAGMENTED);
+        EXPECT_EQ(header.termOffset(), MTU_LENGTH * 2);
+        EXPECT_EQ(header.frameLength(), DataFrameHeader::LENGTH + msgLength);
+        EXPECT_EQ(header.flags(), FrameDescriptor::END_FRAG);
         EXPECT_EQ(header.position(),
-            LogBufferDescriptor::computePosition(ACTIVE_TERM_ID, header.termOffset() + header.frameLength(), POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID));
+            LogBufferDescriptor::computePosition(
+                ACTIVE_TERM_ID,
+                BitUtil::align(header.termOffset() + header.frameLength(), FrameDescriptor::FRAME_ALIGNMENT),
+                POSITION_BITS_TO_SHIFT,
+                INITIAL_TERM_ID));
         verifyPayload(buffer, offset, length);
     };
 

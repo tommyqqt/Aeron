@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -110,11 +110,28 @@ inline std::int64_t getInt64Volatile(volatile std::int64_t* source)
     return sequence;
 }
 
+template<typename T>
+inline volatile T* getValueVolatile(volatile T** source)
+{
+    volatile T* t = *reinterpret_cast<volatile T**>(source);
+    thread_fence();
+    return t;
+}
+
 /**
 * Put a 64 bit int with volatile semantics.
 */
-inline void  putInt64Volatile(volatile std::int64_t*  address, std::int64_t value)
+inline void putInt64Volatile(volatile std::int64_t*  address, std::int64_t value)
 {
+    thread_fence();
+    *reinterpret_cast<volatile std::int64_t *>(address) = value;
+}
+
+template<typename T>
+inline void putValueVolatile(volatile T* address, T value)
+{
+    static_assert(sizeof(T) <= 8, "Requires size <= 8 bytes");
+
     thread_fence();
     *reinterpret_cast<volatile std::int64_t *>(address) = value;
 }
@@ -122,10 +139,17 @@ inline void  putInt64Volatile(volatile std::int64_t*  address, std::int64_t valu
 /**
 * Put a 64 bit int with ordered semantics.
 */
-inline void  putInt64Ordered(volatile std::int64_t*  address, std::int64_t value)
+inline void putInt64Ordered(volatile std::int64_t*  address, std::int64_t value)
 {
     thread_fence();
     *reinterpret_cast<volatile std::int64_t *>(address) = value;
+}
+
+template<typename T>
+inline void putValueOrdered(volatile T** address, volatile T* value)
+{
+    thread_fence();
+    *reinterpret_cast<volatile T**>(address) = value;
 }
 
 /**

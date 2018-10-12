@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,12 @@
 #include <memory>
 
 #ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif // !NOMINMAX
+    #include <windows.h>
+#else
+    #include <sys/types.h>
 #endif
 
 
@@ -32,9 +36,15 @@ class MemoryMappedFile
 public:
     typedef std::shared_ptr<MemoryMappedFile> ptr_t;
 
-    static ptr_t createNew(const char* filename, size_t length);
+#ifdef _WIN32
+    static ptr_t createNew(const char* filename, size_t offset, size_t length);
+    static ptr_t mapExisting(const char* filename, size_t offset, size_t length);
+#else
+    static ptr_t createNew(const char* filename, off_t offset, size_t length);
+    static ptr_t mapExisting(const char* filename, off_t offset, size_t length);
+#endif
+
     static ptr_t mapExisting(const char* filename);
-    static ptr_t mapExisting(const char *filename, size_t offset, size_t length);
 
     ~MemoryMappedFile ();
 
@@ -49,10 +59,6 @@ public:
     static std::int64_t getFileSize(const char *filename);
 
 private:
-    MemoryMappedFile(const char* filename, size_t length);
-    MemoryMappedFile(const char* filename);
-    MemoryMappedFile(const char* filename, size_t offset, size_t length);
-
     struct FileHandle
     {
 #ifdef _WIN32
@@ -62,14 +68,18 @@ private:
 #endif
     };
 
-    bool fill(FileHandle fd, size_t sz, std::uint8_t);
+#ifdef _WIN32
+    MemoryMappedFile(const FileHandle fd, size_t offset, size_t length);
+#else
+    MemoryMappedFile(const FileHandle fd, off_t offset, size_t length);
+#endif
+
     uint8_t* doMapping(size_t size, FileHandle fd, size_t offset);
 
     std::uint8_t* m_memory = 0;
     size_t m_memorySize = 0;
-#if !defined(PAGE_SIZE)
-    static size_t PAGE_SIZE;
-#endif
+    static size_t m_page_size;
+    static bool fill(FileHandle fd, size_t sz, std::uint8_t);
 
 #ifdef _WIN32
     HANDLE m_file = NULL;

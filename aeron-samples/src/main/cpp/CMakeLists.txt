@@ -1,5 +1,5 @@
 #
-# Copyright 2014 - 2015 Real Logic Ltd.
+# Copyright 2014-2018 Real Logic Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,10 @@
 # limitations under the License.
 #
 
+include_directories(${AERON_CLIENT_SOURCE_PATH})
+
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DDISABLE_BOUNDS_CHECKS")
+
 set(HEADERS
     Configuration.h
     RateReporter.h)
@@ -27,45 +31,52 @@ add_executable(RateSubscriber RateSubscriber.cpp ${HEADERS})
 add_executable(Pong Pong.cpp ${HEADERS})
 add_executable(Ping Ping.cpp ${HEADERS})
 add_executable(Throughput Throughput.cpp ${HEADERS})
+add_executable(ErrorStat ErrorStat.cpp ${HEADERS})
+add_executable(ExclusiveThroughput ExclusiveThroughput.cpp ${HEADERS})
+add_executable(PingPong PingPong.cpp ${HEADERS})
 
 target_link_libraries(AeronStat
-    aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    aeron_client)
 
 target_link_libraries(BasicPublisher
-    aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    aeron_client)
 
 target_link_libraries(TimeTests
     ${CMAKE_THREAD_LIBS_INIT})
 
 target_link_libraries(BasicSubscriber
-    aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    aeron_client)
 
 target_link_libraries(StreamingPublisher
-    aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    aeron_client)
 
 target_link_libraries(RateSubscriber
-    aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    aeron_client)
 
 target_link_libraries(Pong
-    aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    aeron_client)
 
 target_link_libraries(Ping
     aeron_client
-    ${HDRHISTOGRAM_LIBS}
-    ${CMAKE_THREAD_LIBS_INIT})
+    ${HDRHISTOGRAM_LIBS})
 
 add_dependencies(Ping hdr_histogram)
 
 target_link_libraries(Throughput
+    aeron_client)
+
+target_link_libraries(ErrorStat
+    aeron_client)
+
+target_link_libraries(ExclusiveThroughput
+    aeron_client)
+
+target_link_libraries(PingPong
     aeron_client
-    ${CMAKE_THREAD_LIBS_INIT})
+    ${HDRHISTOGRAM_LIBS})
+
+add_dependencies(PingPong hdr_histogram)
 
 install(
-    TARGETS AeronStat BasicPublisher TimeTests BasicSubscriber StreamingPublisher RateSubscriber Ping Pong Throughput
+    TARGETS AeronStat BasicPublisher TimeTests BasicSubscriber StreamingPublisher RateSubscriber Ping Pong Throughput ErrorStat ExclusiveThroughput PingPong
     DESTINATION bin)

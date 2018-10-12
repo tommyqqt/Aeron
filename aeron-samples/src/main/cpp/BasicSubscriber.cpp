@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,12 +67,20 @@ Settings parseCmdLine(CommandOptionParser& cp, int argc, char** argv)
 
 fragment_handler_t printStringMessage()
 {
-    return [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
+    return [&](const AtomicBuffer& buffer, util::index_t offset, util::index_t length, const Header& header)
     {
         std::cout << "Message to stream " << header.streamId() << " from session " << header.sessionId();
         std::cout << "(" << length << "@" << offset << ") <<";
-        std::cout << std::string((char *)buffer.buffer() + offset, (unsigned long)length) << ">>" << std::endl;
+        std::cout << std::string(reinterpret_cast<const char *>(buffer.buffer()) + offset, static_cast<std::size_t>(length)) << ">>" << std::endl;
     };
+}
+
+void printEndOfStream(Image &image)
+{
+    std::cout << "End Of Stream image correlationId=" << image.correlationId()
+        << " sessionId=" << image.sessionId()
+        << " from " << image.sourceIdentity()
+        << std::endl;
 }
 
 int main(int argc, char** argv)
@@ -129,29 +137,46 @@ int main(int argc, char** argv)
             subscription = aeron->findSubscription(id);
         }
 
+        const std::int64_t channelStatus = subscription->channelStatus();
+
+        std::cout << "Subscription channel status (id=" << subscription->channelStatusId() << ") "
+            << ((channelStatus == ChannelEndpointStatus::CHANNEL_ENDPOINT_ACTIVE) ?
+                "ACTIVE" : std::to_string(channelStatus))
+            << std::endl;
+
         fragment_handler_t handler = printStringMessage();
         SleepingIdleStrategy idleStrategy(IDLE_SLEEP_MS);
+
+        bool reachedEos = false;
 
         while (running)
         {
             const int fragmentsRead = subscription->poll(handler, FRAGMENTS_LIMIT);
 
+            if (0 == fragmentsRead)
+            {
+                if (!reachedEos && subscription->pollEndOfStreams(printEndOfStream) > 0)
+                {
+                    reachedEos = true;
+                }
+            }
+
             idleStrategy.idle(fragmentsRead);
         }
 
     }
-    catch (CommandOptionException& e)
+    catch (const CommandOptionException& e)
     {
         std::cerr << "ERROR: " << e.what() << std::endl << std::endl;
         cp.displayOptionsHelp(std::cerr);
         return -1;
     }
-    catch (SourcedException& e)
+    catch (const SourcedException& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << e.where() << std::endl;
         return -1;
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << std::endl;
         return -1;

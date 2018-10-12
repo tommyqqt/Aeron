@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,6 +50,11 @@ std::string makeTempFileName()
 
     throw util::IllegalStateException("could not make unique temp filename", SOURCEINFO);
 #endif
+}
+
+void throwIllegalArgumentException()
+{
+    throw util::IllegalArgumentException("Intentional IllegalArgumentException", SOURCEINFO);
 }
 
 }}

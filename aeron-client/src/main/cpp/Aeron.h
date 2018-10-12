@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@
 #include "ClientConductor.h"
 #include "concurrent/SleepingIdleStrategy.h"
 #include "concurrent/AgentRunner.h"
+#include "concurrent/AgentInvoker.h"
 #include "Publication.h"
 #include "Subscription.h"
 #include "Context.h"
@@ -84,7 +85,7 @@ public:
      * This function returns immediately and does not wait for the response from the media driver. The returned
      * registration id is to be used to determine the status of the command with the media driver.
      *
-     * @param channel for receiving the messages known to the media layer.
+     * @param channel for sending the messages known to the media layer.
      * @param streamId within the channel scope.
      * @return registration id for the publication
      */
@@ -116,6 +117,40 @@ public:
     }
 
     /**
+     * Add an {@link ExclusivePublication} for publishing messages to subscribers from a single thread.
+     *
+     * @param channel  for sending the messages known to the media layer.
+     * @param streamId within the channel scope.
+     * @return registration id for the publication
+     */
+    inline std::int64_t addExclusivePublication(const std::string& channel, std::int32_t streamId)
+    {
+        return m_conductor.addExclusivePublication(channel, streamId);
+    }
+
+    /**
+     * Retrieve the ExclusivePublication associated with the given registrationId.
+     *
+     * This method is non-blocking.
+     *
+     * The value returned is dependent on what has occurred with respect to the media driver:
+     *
+     * - If the registrationId is unknown, then a nullptr is returned.
+     * - If the media driver has not answered the add command, then a nullptr is returned.
+     * - If the media driver has successfully added the ExclusivePublication then what is returned is the ExclusivePublication.
+     * - If the media driver has returned an error, this method will throw the error returned.
+     *
+     * @see Aeron::addExclusivePublication
+     *
+     * @param registrationId of the ExclusivePublication returned by Aeron::addExclusivePublication
+     * @return ExclusivePublication associated with the registrationId
+     */
+    inline std::shared_ptr<ExclusivePublication> findExclusivePublication(std::int64_t registrationId)
+    {
+        return m_conductor.findExclusivePublication(registrationId);
+    }
+
+    /**
      * Add a new {@link Subscription} for subscribing to messages from publishers.
      *
      * This function returns immediately and does not wait for the response from the media driver. The returned
@@ -127,7 +162,28 @@ public:
      */
     inline std::int64_t addSubscription(const std::string& channel, std::int32_t streamId)
     {
-        return m_conductor.addSubscription(channel, streamId);
+        return m_conductor.addSubscription(
+            channel, streamId, m_context.m_onAvailableImageHandler, m_context.m_onUnavailableImageHandler);
+    }
+
+    /**
+     * Add a new {@link Subscription} for subscribing to messages from publishers.
+     *
+     * This method will override the default handlers from the {@link Context}.
+     *
+     * @param channel                 for receiving the messages known to the media layer.
+     * @param streamId                within the channel scope.
+     * @param availableImageHandler   called when {@link Image}s become available for consumption.
+     * @param unavailableImageHandler called when {@link Image}s go unavailable for consumption.
+     * @return registration id for the subscription
+     */
+    inline std::int64_t addSubscription(
+        const std::string& channel,
+        std::int32_t streamId,
+        const on_available_image_t &onAvailableImageHandler,
+        const on_unavailable_image_t &onUnavailableImageHandler)
+    {
+        return m_conductor.addSubscription(channel, streamId, onAvailableImageHandler, onUnavailableImageHandler);
     }
 
     /**
@@ -152,6 +208,81 @@ public:
         return m_conductor.findSubscription(registrationId);
     }
 
+    /**
+     * Generate the next correlation id that is unique for the connected Media Driver.
+     *
+     * This is useful generating correlation identifiers for pairing requests with responses in a clients own
+     * application protocol.
+     *
+     * This method is thread safe and will work across processes that all use the same media driver.
+     *
+     * @return next correlation id that is unique for the Media Driver.
+     */
+    inline std::int64_t nextCorrelationId()
+    {
+        return m_toDriverRingBuffer.nextCorrelationId();
+    }
+
+    /**
+     * Allocate a counter on the media driver and return a {@link Counter} for it.
+     *
+     * @param typeId      for the counter.
+     * @param keyBuffer   containing the optional key for the counter.
+     * @param keyLength   of the key in the keyBuffer.
+     * @param label       for the counter.
+     * @return registration id for the Counter
+     */
+    inline std::int64_t addCounter(
+        std::int32_t typeId,
+        const std::uint8_t *keyBuffer,
+        std::size_t keyLength,
+        const std::string& label)
+    {
+        return m_conductor.addCounter(typeId, keyBuffer, keyLength, label);
+    }
+
+    /**
+     * Retrieve the Counter associated with the given registrationId.
+     *
+     * This method is non-blocking.
+     *
+     * The value returned is dependent on what has occurred with respect to the media driver:
+     *
+     * - If the registrationId is unknown, then a nullptr is returned.
+     * - If the media driver has not answered the add command, then a nullptr is returned.
+     * - If the media driver has successfully added the Counter then what is returned is the Counter.
+     * - If the media driver has returned an error, this method will throw the error returned.
+     *
+     * @see Aeron::addCounter
+     *
+     * @param registrationId of the Counter returned by Aeron::addCounter
+     * @return Counter associated with the registrationId
+     */
+    inline std::shared_ptr<Counter> findCounter(std::int64_t registrationId)
+    {
+        return m_conductor.findCounter(registrationId);
+    }
+
+    /**
+     * Return the AgentInvoker for the client conductor.
+     *
+     * @return AgenInvoker for the conductor.
+     */
+    inline AgentInvoker<ClientConductor>& conductorAgentInvoker()
+    {
+        return m_conductorInvoker;
+    }
+
+    /**
+     * Get the CountersReader for the Aeron media driver counters.
+     *
+     * @return CountersReader for the Aeron media driver in use.
+     */
+    inline CountersReader& countersReader()
+    {
+        return m_conductor.countersReader();
+    }
+
 private:
     std::random_device m_randomDevice;
     std::default_random_engine m_randomEngine;
@@ -163,6 +294,7 @@ private:
 
     AtomicBuffer m_toDriverAtomicBuffer;
     AtomicBuffer m_toClientsAtomicBuffer;
+    AtomicBuffer m_countersMetadataBuffer;
     AtomicBuffer m_countersValueBuffer;
 
     ManyToOneRingBuffer m_toDriverRingBuffer;
@@ -174,6 +306,7 @@ private:
     ClientConductor m_conductor;
     SleepingIdleStrategy m_idleStrategy;
     AgentRunner<ClientConductor, SleepingIdleStrategy> m_conductorRunner;
+    AgentInvoker<ClientConductor> m_conductorInvoker;
 
     MemoryMappedFile::ptr_t mapCncFile(Context& context);
 };

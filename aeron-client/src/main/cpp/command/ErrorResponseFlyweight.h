@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,11 +48,8 @@ struct ErrorResponseDefn
 {
     std::int64_t offendingCommandCorrelationId;
     std::int32_t errorCode;
-    struct
-    {
-        std::int32_t errorMessageLength;
-        std::int8_t  errorMessageData[1];
-    } errorMessage;
+    std::int32_t errorMessageLength;
+    std::int8_t  errorMessageData[1];
 };
 #pragma pack(pop)
 
@@ -83,14 +80,14 @@ public:
 
     inline std::string errorMessage() const
     {
-        return stringGet(offsetof(ErrorResponseDefn, errorMessage));
+        return stringGet(offsetof(ErrorResponseDefn, errorMessageLength));
     }
 
     inline util::index_t length() const
     {
-        return offsetof(ErrorResponseDefn, errorMessage.errorMessageData) + m_struct.errorMessage.errorMessageLength;
+        return offsetof(ErrorResponseDefn, errorMessageData) + m_struct.errorMessageLength;
     }
 };
 
-}};
+}}
 #endif //AERON_ERRORFLYWEIGHT_H

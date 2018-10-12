@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -143,14 +143,22 @@ int main(int argc, char **argv)
             pongPublication = aeron.findPublication(publicationId);
         }
 
+        Publication &pongPublicationRef = *pongPublication;
+        Subscription &pingSubscriptionRef = *pingSubscription;
+
         BusySpinIdleStrategy idleStrategy;
         BusySpinIdleStrategy pingHandlerIdleStrategy;
         FragmentAssembler fragmentAssembler(
-            [&](AtomicBuffer& buffer, index_t offset, index_t length, Header& header)
+            [&](AtomicBuffer& buffer, index_t offset, index_t length, const Header& header)
             {
-                while (pongPublication->offer(buffer, offset, length) < 0L)
+                if (pongPublicationRef.offer(buffer, offset, length) > 0L)
                 {
-                    pingHandlerIdleStrategy.idle(0);
+                    return;
+                }
+
+                while (pongPublicationRef.offer(buffer, offset, length) < 0L)
+                {
+                    pingHandlerIdleStrategy.idle();
                 }
             });
 
@@ -158,25 +166,23 @@ int main(int argc, char **argv)
 
         while (running)
         {
-            const int fragmentsRead = pingSubscription->poll(handler, settings.fragmentCountLimit);
-
-            idleStrategy.idle(fragmentsRead);
+            idleStrategy.idle(pingSubscriptionRef.poll(handler, settings.fragmentCountLimit));
         }
 
         std::cout << "Shutting down...\n";
     }
-    catch (CommandOptionException& e)
+    catch (const CommandOptionException& e)
     {
         std::cerr << "ERROR: " << e.what() << std::endl << std::endl;
         cp.displayOptionsHelp(std::cerr);
         return -1;
     }
-    catch (SourcedException& e)
+    catch (const SourcedException& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << e.where() << std::endl;
         return -1;
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << std::endl;
         return -1;
@@ -184,4 +190,3 @@ int main(int argc, char **argv)
 
     return 0;
 }
-

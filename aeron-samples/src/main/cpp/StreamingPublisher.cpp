@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,7 +74,7 @@ Settings parseCmdLine(CommandOptionParser& cp, int argc, char** argv)
     s.dirPrefix = cp.getOption(optPrefix).getParam(0, s.dirPrefix);
     s.channel = cp.getOption(optChannel).getParam(0, s.channel);
     s.streamId = cp.getOption(optStreamId).getParamAsInt(0, 1, INT32_MAX, s.streamId);
-    s.numberOfMessages = cp.getOption(optMessages).getParamAsLong(0, 0, INT64_MAX, s.numberOfMessages);
+    s.numberOfMessages = cp.getOption(optMessages).getParamAsLong(0, 0, LONG_MAX, s.numberOfMessages);
     s.messageLength = cp.getOption(optLength).getParamAsInt(0, sizeof(std::int64_t), INT32_MAX, s.messageLength);
     s.lingerTimeoutMs = cp.getOption(optLinger).getParamAsInt(0, 0, 60 * 60 * 1000, s.lingerTimeoutMs);
     s.randomMessageLength = cp.getOption(optRandLen).isPresent();
@@ -89,7 +89,7 @@ void printRate(double messagesPerSec, double bytesPerSec, long totalFragments, l
     if (printingActive)
     {
         std::printf(
-            "%.02g msgs/sec, %.02g bytes/sec, totals %ld messages %ld MB\n",
+            "%.02g msgs/sec, %.02g bytes/sec, totals %ld messages %ld MB payloads\n",
             messagesPerSec, bytesPerSec, totalFragments, totalBytes / (1024 * 1024));
     }
 }
@@ -114,7 +114,7 @@ on_new_length_t composeLengthGenerator(bool random, int max)
     }
     else
     {
-        return [&]() { return max; };
+        return [max]() { return max; };
     }
 }
 
@@ -137,15 +137,11 @@ int main(int argc, char **argv)
     {
         Settings settings = parseCmdLine(cp, argc, argv);
 
-        ::setlocale(LC_NUMERIC, "");
-
-        std::printf(
-            "Streaming %'ld messages of%s size %d bytes to %s on stream ID %d\n",
-            settings.numberOfMessages,
-            settings.randomMessageLength ? " random" : "",
-            settings.messageLength,
-            settings.channel.c_str(),
-            settings.streamId);
+        std::cout << "Streaming " << toStringWithCommas(settings.numberOfMessages) << " messages of"
+            << (settings.randomMessageLength ? " random" : "") << " payload length "
+            << settings.messageLength << " bytes to "
+            << settings.channel << " on stream ID "
+            << settings.streamId << std::endl;
 
         aeron::Context context;
 
@@ -204,7 +200,13 @@ int main(int argc, char **argv)
                 while (publication->offer(srcBuffer, 0, length) < 0L)
                 {
                     backPressureCount++;
-                    offerIdleStrategy.idle(0);
+
+                    if (!running)
+                    {
+                        break;
+                    }
+
+                    offerIdleStrategy.idle();
                 }
 
                 rateReporter.onMessage(1, length);
@@ -235,18 +237,18 @@ int main(int argc, char **argv)
             rateReporterThread->join();
         }
     }
-    catch (CommandOptionException& e)
+    catch (const CommandOptionException& e)
     {
         std::cerr << "ERROR: " << e.what() << std::endl << std::endl;
         cp.displayOptionsHelp(std::cerr);
         return -1;
     }
-    catch (SourcedException& e)
+    catch (const SourcedException& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << e.where() << std::endl;
         return -1;
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << std::endl;
         return -1;

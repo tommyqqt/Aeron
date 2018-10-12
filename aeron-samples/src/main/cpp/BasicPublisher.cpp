@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -115,6 +115,13 @@ int main(int argc, char** argv)
             publication = aeron->findPublication(id);
         }
 
+        const std::int64_t channelStatus = publication->channelStatus();
+
+        std::cout << "Publication channel status (id=" << publication->channelStatusId() << ") "
+            << ((channelStatus == ChannelEndpointStatus::CHANNEL_ENDPOINT_ACTIVE) ?
+                "ACTIVE" : std::to_string(channelStatus))
+            << std::endl;
+
         AERON_DECL_ALIGNED(buffer_t buffer, 16);
         concurrent::AtomicBuffer srcBuffer(&buffer[0], buffer.size());
         char message[256];
@@ -129,32 +136,40 @@ int main(int argc, char** argv)
 
             srcBuffer.putBytes(0, reinterpret_cast<std::uint8_t *>(message), messageLen);
 
-            std::cout << "offering " << i << "/" << settings.numberOfMessages;
+            std::cout << "offering " << i << "/" << settings.numberOfMessages << " - ";
             std::cout.flush();
 
             const std::int64_t result = publication->offer(srcBuffer, 0, messageLen);
 
             if (result < 0)
             {
-                if (NOT_CONNECTED == result)
+                if (BACK_PRESSURED == result)
                 {
-                    std::cout << " not connected yet." << std::endl;
+                    std::cout << "Offer failed due to back pressure" << std::endl;
                 }
-                else if (BACK_PRESSURED == result)
+                else if (NOT_CONNECTED == result)
                 {
-                    std::cout << " back pressured." << std::endl;
+                    std::cout << "Offer failed because publisher is not connected to subscriber" << std::endl;
+                }
+                else if (ADMIN_ACTION == result)
+                {
+                    std::cout << "Offer failed because of an administration action in the system" << std::endl;
+                }
+                else if (PUBLICATION_CLOSED == result)
+                {
+                    std::cout << "Offer failed publication is closed" << std::endl;
                 }
                 else
                 {
-                    std::cout << " ah?! unknown " << result << std::endl;
+                    std::cout << "Offer failed due to unknown reason" << result << std::endl;
                 }
             }
             else
             {
-                std::cout << " yay!" << std::endl;
+                std::cout << "yay!" << std::endl;
             }
 
-            if (!publication->isStillConnected())
+            if (!publication->isConnected())
             {
                 std::cout << "No active subscribers detected" << std::endl;
             }
@@ -170,18 +185,18 @@ int main(int argc, char** argv)
             std::this_thread::sleep_for(std::chrono::milliseconds(settings.lingerTimeoutMs));
         }
     }
-    catch (CommandOptionException& e)
+    catch (const CommandOptionException& e)
     {
         std::cerr << "ERROR: " << e.what() << std::endl << std::endl;
         cp.displayOptionsHelp(std::cerr);
         return -1;
     }
-    catch (SourcedException& e)
+    catch (const SourcedException& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << e.where() << std::endl;
         return -1;
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << std::endl;
         return -1;

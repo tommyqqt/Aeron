@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,6 @@ static const char optStreamId = 's';
 static const char optMessages = 'm';
 static const char optLinger   = 'l';
 static const char optLength   = 'L';
-static const char optRandLen  = 'r';
 static const char optProgress = 'P';
 static const char optFrags    = 'f';
 
@@ -59,7 +58,6 @@ struct Settings
     int messageLength = samples::configuration::DEFAULT_MESSAGE_LENGTH;
     int lingerTimeoutMs = samples::configuration::DEFAULT_LINGER_TIMEOUT_MS;
     int fragmentCountLimit = samples::configuration::DEFAULT_FRAGMENT_COUNT_LIMIT;
-    bool randomMessageLength = samples::configuration::DEFAULT_RANDOM_MESSAGE_LENGTH;
     bool progress = samples::configuration::DEFAULT_PUBLICATION_RATE_PROGRESS;
 };
 
@@ -77,11 +75,10 @@ Settings parseCmdLine(CommandOptionParser& cp, int argc, char** argv)
     s.dirPrefix = cp.getOption(optPrefix).getParam(0, s.dirPrefix);
     s.channel = cp.getOption(optChannel).getParam(0, s.channel);
     s.streamId = cp.getOption(optStreamId).getParamAsInt(0, 1, INT32_MAX, s.streamId);
-    s.numberOfMessages = cp.getOption(optMessages).getParamAsLong(0, 0, INT64_MAX, s.numberOfMessages);
+    s.numberOfMessages = cp.getOption(optMessages).getParamAsLong(0, 0, LONG_MAX, s.numberOfMessages);
     s.messageLength = cp.getOption(optLength).getParamAsInt(0, sizeof(std::int64_t), INT32_MAX, s.messageLength);
     s.lingerTimeoutMs = cp.getOption(optLinger).getParamAsInt(0, 0, 60 * 60 * 1000, s.lingerTimeoutMs);
     s.fragmentCountLimit = cp.getOption(optFrags).getParamAsInt(0, 1, INT32_MAX, s.fragmentCountLimit);
-    s.randomMessageLength = cp.getOption(optRandLen).isPresent();
     s.progress = cp.getOption(optProgress).isPresent();
     return s;
 }
@@ -93,38 +90,14 @@ void printRate(double messagesPerSec, double bytesPerSec, long totalFragments, l
     if (printingActive)
     {
         std::printf(
-            "%.02g msgs/sec, %.02g bytes/sec, totals %ld messages %ld MB\n",
+            "%.02g msgs/sec, %.02g bytes/sec, totals %ld messages %ld MB payloads\n",
             messagesPerSec, bytesPerSec, totalFragments, totalBytes / (1024 * 1024));
-    }
-}
-
-typedef std::function<int()> on_new_length_t;
-
-static std::random_device randomDevice;
-static std::default_random_engine randomEngine(randomDevice());
-static std::uniform_int_distribution<int> uniformLengthDistribution;
-
-on_new_length_t composeLengthGenerator(bool random, int max)
-{
-    if (random)
-    {
-        std::uniform_int_distribution<int>::param_type param(sizeof(std::int64_t), max);
-        uniformLengthDistribution.param(param);
-
-        return [&]()
-        {
-            return uniformLengthDistribution(randomEngine);
-        };
-    }
-    else
-    {
-        return [&]() { return max; };
     }
 }
 
 fragment_handler_t rateReporterHandler(RateReporter& rateReporter)
 {
-    return [&](AtomicBuffer&, util::index_t, util::index_t length, Header&) { rateReporter.onMessage(1, length); };
+    return [&rateReporter](AtomicBuffer&, util::index_t, util::index_t length, Header&) { rateReporter.onMessage(1, length); };
 }
 
 inline bool isRunning()
@@ -136,7 +109,6 @@ int main(int argc, char **argv)
 {
     CommandOptionParser cp;
     cp.addOption(CommandOption (optHelp,     0, 0, "                Displays help information."));
-    cp.addOption(CommandOption (optRandLen,  0, 0, "                Random Message Length."));
     cp.addOption(CommandOption (optProgress, 0, 0, "                Print rate progress while sending."));
     cp.addOption(CommandOption (optPrefix,   1, 1, "dir             Prefix directory for aeron driver."));
     cp.addOption(CommandOption (optChannel,  1, 1, "channel         Channel."));
@@ -154,15 +126,10 @@ int main(int argc, char **argv)
 
         std::cout << "Subscribing to channel " << settings.channel << " on Stream ID " << settings.streamId << std::endl;
 
-        ::setlocale(LC_NUMERIC, "");
-
-        std::printf(
-            "Streaming %'ld messages of%s size %d bytes to %s on stream ID %d\n",
-            settings.numberOfMessages,
-            settings.randomMessageLength ? " random" : "",
-            settings.messageLength,
-            settings.channel.c_str(),
-            settings.streamId);
+        std::cout << "Streaming " << toStringWithCommas(settings.numberOfMessages) << " messages of payload length "
+            << settings.messageLength << " bytes to "
+            << settings.channel << " on stream ID "
+            << settings.streamId << std::endl;
 
         aeron::Context context;
 
@@ -214,9 +181,6 @@ int main(int argc, char **argv)
             publication = aeron.findPublication(publicationId);
         }
 
-        std::unique_ptr<std::uint8_t[]> buffer(new std::uint8_t[settings.messageLength]);
-        concurrent::AtomicBuffer srcBuffer(buffer.get(), settings.messageLength);
-
         BusySpinIdleStrategy offerIdleStrategy;
         BusySpinIdleStrategy pollIdleStrategy;
 
@@ -224,15 +188,16 @@ int main(int argc, char **argv)
         FragmentAssembler fragmentAssembler(rateReporterHandler(rateReporter));
         fragment_handler_t handler = fragmentAssembler.handler();
 
-        on_new_length_t lengthGenerator = composeLengthGenerator(settings.randomMessageLength, settings.messageLength);
         std::shared_ptr<std::thread> rateReporterThread;
+
+        Publication *publicationPtr = publication.get();
 
         if (settings.progress)
         {
-            rateReporterThread = std::make_shared<std::thread>([&](){ rateReporter.run(); });
+            rateReporterThread = std::make_shared<std::thread>([&rateReporter](){ rateReporter.run(); });
         }
 
-        std::thread pollThread([&]()
+        std::thread pollThread([&subscription, &pollIdleStrategy, &settings, &handler]()
             {
                 while (isRunning())
                 {
@@ -244,10 +209,10 @@ int main(int argc, char **argv)
 
         do
         {
-            printingActive = true;
-
-            long backPressureCount = 0;
             BufferClaim bufferClaim;
+            long backPressureCount = 0;
+
+            printingActive = true;
 
             if (nullptr == rateReporterThread)
             {
@@ -256,12 +221,10 @@ int main(int argc, char **argv)
 
             for (long i = 0; i < settings.numberOfMessages && isRunning(); i++)
             {
-                const int length = lengthGenerator();
-
-                while (publication->tryClaim(length, bufferClaim) < 0L)
+                while (publicationPtr->tryClaim(settings.messageLength, bufferClaim) < 0L)
                 {
                     backPressureCount++;
-                    offerIdleStrategy.idle(0);
+                    offerIdleStrategy.idle();
                 }
 
                 bufferClaim.buffer().putInt64(bufferClaim.offset(), i);
@@ -296,18 +259,18 @@ int main(int argc, char **argv)
             rateReporterThread->join();
         }
     }
-    catch (CommandOptionException& e)
+    catch (const CommandOptionException& e)
     {
         std::cerr << "ERROR: " << e.what() << std::endl << std::endl;
         cp.displayOptionsHelp(std::cerr);
         return -1;
     }
-    catch (SourcedException& e)
+    catch (const SourcedException& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << e.where() << std::endl;
         return -1;
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         std::cerr << "FAILED: " << e.what() << " : " << std::endl;
         return -1;

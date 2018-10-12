@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,16 @@ public:
     }
 
     Header(const Header& header) = default;
+
+    Header& operator=(Header& header)
+    {
+        m_buffer.wrap(header.m_buffer);
+        m_offset = header.m_offset;
+        m_initialTermId = header.m_initialTermId;
+        m_positionBitsToShift = header.m_positionBitsToShift;
+
+        return *this;
+    }
 
     /**
      * Get the initial term id this stream started at.
@@ -142,7 +152,7 @@ public:
      *
      * @return type of the the frame which should always be {@link DataFrameHeader::HDR_TYPE_DATA}
      */
-    inline std::uint16_t type()
+    inline std::uint16_t type() const
     {
         // TODO: add LITTLE_ENDIAN check
         return m_buffer.getUInt16(m_offset + DataFrameHeader::TYPE_FIELD_OFFSET);
@@ -155,7 +165,7 @@ public:
      *
      * @return the flags for this frame.
      */
-    inline std::uint8_t flags()
+    inline std::uint8_t flags() const
     {
         return m_buffer.getUInt8(m_offset + DataFrameHeader::FLAGS_FIELD_OFFSET);
     }
@@ -167,7 +177,18 @@ public:
      */
     inline std::int64_t position() const
     {
-        return LogBufferDescriptor::computePosition(termId(), termOffset() + frameLength(), m_positionBitsToShift, m_initialTermId);
+        const std::int32_t resultingOffset = util::BitUtil::align(termOffset() + frameLength(), FrameDescriptor::FRAME_ALIGNMENT);
+        return LogBufferDescriptor::computePosition(termId(), resultingOffset, m_positionBitsToShift, m_initialTermId);
+    }
+
+    /**
+     * Get the value stored in the reserve space at the end of a data frame header.
+     *
+     * @return the value stored in the reserve space at the end of a data frame header.
+     */
+    inline std::int64_t reservedValue() const
+    {
+        return m_buffer.getInt64(m_offset + DataFrameHeader::RESERVED_VALUE_FIELD_OFFSET);
     }
 
 private:

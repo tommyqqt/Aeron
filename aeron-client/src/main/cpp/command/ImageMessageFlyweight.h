@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,9 @@ namespace aeron { namespace command {
 * |                        Correlation ID                         |
 * |                                                               |
 * +---------------------------------------------------------------+
+* |                 Subscription Registration ID                  |
+* |                                                               |
+* +---------------------------------------------------------------+
 * |                          Stream ID                            |
 * +---------------------------------------------------------------+
 * |                        Channel Length                         |
@@ -46,12 +49,10 @@ namespace aeron { namespace command {
 struct ImageMessageDefn
 {
     std::int64_t correlationId;
+    std::int64_t subscriptionRegistrationId;
     std::int32_t streamId;
-    struct
-    {
-        std::int32_t channelLength;
-        std::int8_t  channelData[1];
-    } channel;
+    std::int32_t channelLength;
+    std::int8_t  channelData[1];
 };
 #pragma pack(pop)
 
@@ -77,6 +78,17 @@ public:
         return *this;
     }
 
+    inline std::int64_t subscriptionRegistrationId() const
+    {
+        return m_struct.subscriptionRegistrationId;
+    }
+
+    inline this_t& subscriptionRegistrationId(std::int64_t value)
+    {
+        m_struct.subscriptionRegistrationId = value;
+        return *this;
+    }
+
     inline std::int32_t streamId() const
     {
         return m_struct.streamId;
@@ -90,18 +102,18 @@ public:
 
     inline std::string channel() const
     {
-        return stringGet(offsetof(ImageMessageDefn, channel));
+        return stringGet(offsetof(ImageMessageDefn, channelLength));
     }
 
     inline this_t& channel(const std::string& value)
     {
-        stringPut(offsetof(ImageMessageDefn, channel), value);
+        stringPut(offsetof(ImageMessageDefn, channelLength), value);
         return *this;
     }
 
     inline std::int32_t length() const
     {
-        return offsetof(ImageMessageDefn, channel.channelData) + m_struct.channel.channelLength;
+        return offsetof(ImageMessageDefn, channelData) + m_struct.channelLength;
     }
 };
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,21 +23,28 @@ Publication::Publication(
     ClientConductor &conductor,
     const std::string &channel,
     std::int64_t registrationId,
+    std::int64_t originalRegistrationId,
     std::int32_t streamId,
     std::int32_t sessionId,
     UnsafeBufferPosition& publicationLimit,
-    LogBuffers &buffers)
+    std::int32_t channelStatusId,
+    std::shared_ptr<LogBuffers> buffers)
     :
     m_conductor(conductor),
-    m_logMetaDataBuffer(buffers.atomicBuffer(LogBufferDescriptor::LOG_META_DATA_SECTION_INDEX)),
+    m_logMetaDataBuffer(buffers->atomicBuffer(LogBufferDescriptor::LOG_META_DATA_SECTION_INDEX)),
     m_channel(channel),
     m_registrationId(registrationId),
+    m_originalRegistrationId(originalRegistrationId),
+    m_maxPossiblePosition(static_cast<int64_t>(buffers->atomicBuffer(0).capacity()) << 31),
     m_streamId(streamId),
     m_sessionId(sessionId),
     m_initialTermId(LogBufferDescriptor::initialTermId(m_logMetaDataBuffer)),
     m_maxPayloadLength(LogBufferDescriptor::mtuLength(m_logMetaDataBuffer) - DataFrameHeader::LENGTH),
-    m_positionBitsToShift(util::BitUtil::numberOfTrailingZeroes(buffers.atomicBuffer(0).capacity())),
+    m_maxMessageLength(FrameDescriptor::computeMaxMessageLength(buffers->atomicBuffer(0).capacity())),
+    m_positionBitsToShift(util::BitUtil::numberOfTrailingZeroes(buffers->atomicBuffer(0).capacity())),
     m_publicationLimit(publicationLimit),
+    m_channelStatusId(channelStatusId),
+    m_logbuffers(buffers),
     m_headerWriter(LogBufferDescriptor::defaultFrameHeader(m_logMetaDataBuffer))
 {
     for (int i = 0; i < LogBufferDescriptor::PARTITION_COUNT; i++)
@@ -48,8 +55,9 @@ Publication::Publication(
          * locality.
          */
         m_appenders[i] = std::unique_ptr<TermAppender>(new TermAppender(
-            buffers.atomicBuffer(i),
-            buffers.atomicBuffer(i + LogBufferDescriptor::PARTITION_COUNT)));
+            buffers->atomicBuffer(i),
+            buffers->atomicBuffer(LogBufferDescriptor::LOG_META_DATA_SECTION_INDEX),
+            i));
     }
 }
 
@@ -58,9 +66,33 @@ Publication::~Publication()
     m_conductor.releasePublication(m_registrationId);
 }
 
-bool Publication::isStillConnected()
+void Publication::addDestination(const std::string& endpointChannel)
 {
-    return m_conductor.isPublicationConnected(LogBufferDescriptor::timeOfLastSm(m_logMetaDataBuffer));
+    if (isClosed())
+    {
+        throw util::IllegalStateException(std::string("Publication is closed"), SOURCEINFO);
+    }
+
+    m_conductor.addDestination(m_originalRegistrationId, endpointChannel);
 }
 
+void Publication::removeDestination(const std::string& endpointChannel)
+{
+    if (isClosed())
+    {
+        throw util::IllegalStateException(std::string("Publication is closed"), SOURCEINFO);
+    }
+
+    m_conductor.removeDestination(m_originalRegistrationId, endpointChannel);
+}
+
+std::int64_t Publication::channelStatus()
+{
+    if (isClosed())
+    {
+        return ChannelEndpointStatus::NO_ID_ALLOCATED;
+    }
+
+    return m_conductor.channelStatus(m_channelStatusId);
+}
 }

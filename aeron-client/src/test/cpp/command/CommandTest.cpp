@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include <util/Exceptions.h>
 #include <util/Index.h>
+#include <util/BitUtil.h>
 #include <concurrent/AtomicBuffer.h>
 #include <command/ImageMessageFlyweight.h>
 #include <command/ImageBuffersReadyFlyweight.h>
@@ -80,17 +81,18 @@ TEST (commandTests, testImageMessageFlyweight)
 
     ASSERT_NO_THROW({
         ImageMessageFlyweight cmd (ab, BASEOFFSET);
-        cmd.correlationId(1).streamId(3).channel(channelData);
+        cmd.correlationId(1).subscriptionRegistrationId(2).streamId(3).channel(channelData);
 
         ASSERT_EQ(ab.getInt64(BASEOFFSET + 0), 1);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 8), 3);
-        ASSERT_EQ(ab.getStringUtf8(BASEOFFSET + 12), channelData);
+        ASSERT_EQ(ab.getInt64(BASEOFFSET + 8), 2);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 16), 3);
+        ASSERT_EQ(ab.getString(BASEOFFSET + 20), channelData);
 
         ASSERT_EQ(cmd.correlationId(), 1);
         ASSERT_EQ(cmd.streamId(), 3);
         ASSERT_EQ(cmd.channel(), channelData);
 
-        ASSERT_EQ(cmd.length(), static_cast<int>(12 + sizeof(std::int32_t) + channelData.length()));
+        ASSERT_EQ(cmd.length(), static_cast<int>(20 + sizeof(std::int32_t) + channelData.length()));
     });
 }
 
@@ -106,23 +108,27 @@ TEST (commandTests, testPublicationReadyFlyweight)
     ASSERT_NO_THROW({
         PublicationBuffersReadyFlyweight cmd(ab, BASEOFFSET);
 
-        cmd.correlationId(-1).streamId(0x01010101).sessionId(0x02020202).positionLimitCounterId(10);
+        cmd.correlationId(-1).registrationId(1).streamId(0x01010101).sessionId(0x02020202).positionLimitCounterId(10);
+        cmd.channelStatusIndicatorId(11);
         cmd.logFileName(logFileNameData);
 
         ASSERT_EQ(ab.getInt64(BASEOFFSET + 0), -1);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 8), 0x02020202);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 12), 0x01010101);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 16), 10);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 20), static_cast<int>(logFileNameData.length()));
-        ASSERT_EQ(ab.getStringUtf8(BASEOFFSET + 20), logFileNameData);
+        ASSERT_EQ(ab.getInt64(BASEOFFSET + 8), 1);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 16), 0x02020202);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 20), 0x01010101);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 24), 10);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 28), 11);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 32), static_cast<int>(logFileNameData.length()));
+        ASSERT_EQ(ab.getString(BASEOFFSET + 32), logFileNameData);
 
         ASSERT_EQ(cmd.correlationId(), -1);
+        ASSERT_EQ(cmd.registrationId(), 1);
         ASSERT_EQ(cmd.streamId(), 0x01010101);
         ASSERT_EQ(cmd.sessionId(), 0x02020202);
         ASSERT_EQ(cmd.positionLimitCounterId(), 10);
         ASSERT_EQ(cmd.logFileName(), logFileNameData);
 
-        ASSERT_EQ(cmd.length(), static_cast<int>(20 + sizeof(std::int32_t) + logFileNameData.length()));
+        ASSERT_EQ(cmd.length(), static_cast<int>(32 + sizeof(std::int32_t) + logFileNameData.length()));
     });
 }
 
@@ -135,67 +141,45 @@ TEST (commandTests, testImageBuffersReadyFlyweight)
     std::string logFileNameData = "logfilenamedata";
     std::string sourceInfoData = "sourceinfodata";
 
-    ASSERT_NO_THROW(
-    {
+    ASSERT_NO_THROW({
         ImageBuffersReadyFlyweight cmd(ab, BASEOFFSET);
 
-        cmd.correlationId(-1).streamId(0x01010101).sessionId(0x02020202).subscriberPositionCount(4);
-        cmd.logFileName(logFileNameData).sourceIdentity(sourceInfoData);
-        for (int n = 0; n < 4; n++)
-        {
-            cmd.subscriberPosition(n, ImageBuffersReadyDefn::SubscriberPosition {n, n});
-        }
+        cmd.correlationId(-1);
+
+        cmd.sessionId(0x02020202)
+            .streamId(0x01010101)
+            .subscriberRegistrationId(2)
+            .subscriberPositionId(1)
+            .logFileName(logFileNameData)
+            .sourceIdentity(sourceInfoData);
 
         ASSERT_EQ(ab.getInt64(BASEOFFSET + 0), -1);
         ASSERT_EQ(ab.getInt32(BASEOFFSET + 8), 0x02020202);
         ASSERT_EQ(ab.getInt32(BASEOFFSET + 12), 0x01010101);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 16), 12);
-        ASSERT_EQ(ab.getInt32(BASEOFFSET + 20), 4);
 
-        const index_t startOfSubscriberPositions = BASEOFFSET + 24;
-        for (int n = 0; n < 4; n++)
-        {
-            ASSERT_EQ(
-                ab.getInt32(startOfSubscriberPositions + (n * sizeof(ImageBuffersReadyDefn::SubscriberPosition))), n);
-            ASSERT_EQ(
-                ab.getInt32(startOfSubscriberPositions + (n * sizeof(ImageBuffersReadyDefn::SubscriberPosition)) + 4), n);
-        }
+        ASSERT_EQ(ab.getInt64(BASEOFFSET + 16), 2);
+        ASSERT_EQ(ab.getInt32(BASEOFFSET + 24), 1);
 
-        const index_t startOfLogFileName = BASEOFFSET + 24 + (4 * sizeof(ImageBuffersReadyDefn::SubscriberPosition));
-        ASSERT_EQ(ab.getInt32(startOfLogFileName), static_cast<int>(logFileNameData.length()));
-        ASSERT_EQ(ab.getStringUtf8(startOfLogFileName), logFileNameData);
+        const index_t startOfLogFileName = BASEOFFSET + 28;
+        ASSERT_EQ(ab.getStringLength(startOfLogFileName), static_cast<int>(logFileNameData.length()));
+        ASSERT_EQ(ab.getString(startOfLogFileName), logFileNameData);
 
         const index_t startOfSourceIdentity = startOfLogFileName + 4 + (index_t)logFileNameData.length();
-        ASSERT_EQ(ab.getInt32(startOfSourceIdentity), static_cast<int>(sourceInfoData.length()));
-        ASSERT_EQ(ab.getStringUtf8(startOfSourceIdentity), sourceInfoData);
+        const index_t startOfSourceIdentityAligned = BitUtil::align(startOfSourceIdentity, 4);
+        ASSERT_EQ(ab.getStringLength(startOfSourceIdentityAligned), static_cast<int>(sourceInfoData.length()));
+        ASSERT_EQ(ab.getString(startOfSourceIdentityAligned), sourceInfoData);
 
         ASSERT_EQ(cmd.correlationId(), -1);
-        ASSERT_EQ(cmd.streamId(), 0x01010101);
         ASSERT_EQ(cmd.sessionId(), 0x02020202);
-        ASSERT_EQ(cmd.subscriberPositionCount(), 4);
+        ASSERT_EQ(cmd.streamId(), 0x01010101);
+        ASSERT_EQ(cmd.subscriberRegistrationId(), 2);
+        ASSERT_EQ(cmd.subscriberPositionId(), 1);
         ASSERT_EQ(cmd.logFileName(), logFileNameData);
         ASSERT_EQ(cmd.sourceIdentity(), sourceInfoData);
-        for (int n = 0; n < 4; n++)
-        {
-            const ImageBuffersReadyDefn::SubscriberPosition subscriberPosition = cmd.subscriberPosition(n);
 
-            ASSERT_EQ(subscriberPosition.indicatorId, n);
-            ASSERT_EQ(subscriberPosition.registrationId, n);
-        }
+        int expectedLength = static_cast<int>(
+            startOfSourceIdentityAligned + sizeof(std::int32_t) + sourceInfoData.length());
 
-        const ImageBuffersReadyDefn::SubscriberPosition* subscriberPositions = cmd.subscriberPositions();
-        for (int n = 0; n < 4; n++)
-        {
-            ASSERT_EQ(subscriberPositions[n].indicatorId, n);
-            ASSERT_EQ(subscriberPositions[n].registrationId, n);
-        }
-
-        ASSERT_EQ(
-            cmd.length(),
-            static_cast<int>(sizeof(ImageBuffersReadyDefn) +
-                (4 * sizeof(ImageBuffersReadyDefn::SubscriberPosition)) +
-                sizeof(std::int32_t) + logFileNameData.length() +
-                sizeof(std::int32_t) + sourceInfoData.length()));
-    }
-    );
+        ASSERT_EQ(cmd.length(), expectedLength);
+    });
 }

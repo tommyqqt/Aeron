@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,11 +33,16 @@ namespace aeron { namespace command {
 * |                         Correlation ID                        |
 * |                                                               |
 * +---------------------------------------------------------------+
+* |                        Registration ID                        |
+* |                                                               |
+* +---------------------------------------------------------------+
 * |                          Session ID                           |
 * +---------------------------------------------------------------+
 * |                           Stream ID                           |
 * +---------------------------------------------------------------+
 * |                   Position Limit Counter Id                   |
+* +---------------------------------------------------------------+
+* |                  Channel Status Indicator ID                  |
 * +---------------------------------------------------------------+
 * |                         Log File Length                       |
 * +---------------------------------------------------------------+
@@ -51,14 +56,13 @@ namespace aeron { namespace command {
 struct PublicationBuffersReadyDefn
 {
     std::int64_t correlationId;
+    std::int64_t registrationId;
     std::int32_t sessionId;
     std::int32_t streamId;
     std::int32_t positionLimitCounterId;
-    struct
-    {
-        std::int32_t logFileLength;
-        std::int8_t  logFileData[1];
-    } logFile;
+    std::int32_t channelStatusIndicatorId;
+    std::int32_t logFileLength;
+    std::int8_t  logFileData[1];
 };
 #pragma pack(pop)
 
@@ -80,6 +84,17 @@ public:
     inline this_t& correlationId(std::int64_t value)
     {
         m_struct.correlationId = value;
+        return *this;
+    }
+
+    inline std::int64_t registrationId() const
+    {
+        return m_struct.registrationId;
+    }
+
+    inline this_t& registrationId(std::int64_t value)
+    {
+        m_struct.registrationId = value;
         return *this;
     }
 
@@ -116,23 +131,34 @@ public:
         return *this;
     }
 
+    inline std::int32_t channelStatusIndicatorId() const
+    {
+        return m_struct.channelStatusIndicatorId;
+    }
+
+    inline this_t& channelStatusIndicatorId(std::int32_t value)
+    {
+        m_struct.channelStatusIndicatorId = value;
+        return *this;
+    }
+
     inline std::string logFileName() const
     {
-        return stringGet(offsetof(PublicationBuffersReadyDefn, logFile));
+        return stringGet(offsetof(PublicationBuffersReadyDefn, logFileLength));
     }
 
     inline this_t& logFileName(const std::string& value)
     {
-        stringPut(offsetof(PublicationBuffersReadyDefn, logFile), value);
+        stringPut(offsetof(PublicationBuffersReadyDefn, logFileLength), value);
         return *this;
     }
 
     std::int32_t length() const
     {
-        return offsetof(PublicationBuffersReadyDefn, logFile.logFileData) + m_struct.logFile.logFileLength;
+        return offsetof(PublicationBuffersReadyDefn, logFileData) + m_struct.logFileLength;
     }
 };
 
-}};
+}}
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ public:
     {
     }
 
-    UnsafeBufferPosition(UnsafeBufferPosition& position)
+    UnsafeBufferPosition(const UnsafeBufferPosition& position)
     {
         m_buffer.wrap(position.m_buffer);
         m_id = position.m_id;
@@ -46,24 +46,31 @@ public:
     {
     }
 
-    inline void wrap(UnsafeBufferPosition& position)
+    UnsafeBufferPosition& operator=(const UnsafeBufferPosition& position)
+    {
+        wrap(position);
+
+        return *this;
+    }
+
+    inline void wrap(const UnsafeBufferPosition& position)
     {
         m_buffer.wrap(position.m_buffer);
         m_id = position.m_id;
         m_offset = position.m_offset;
     }
 
-    inline std::int32_t id()
+    inline std::int32_t id() const
     {
         return m_id;
     }
 
-    inline std::int64_t get()
+    inline std::int64_t get() const
     {
         return m_buffer.getInt64(m_offset);
     }
 
-    inline std::int64_t getVolatile()
+    inline std::int64_t getVolatile() const
     {
         return m_buffer.getInt64Volatile(m_offset);
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,12 @@
 
 namespace aeron { namespace concurrent { namespace mock {
 
-MockAtomicBuffer::MockAtomicBuffer(std::uint8_t *buffer, util::index_t length) :
-    AtomicBuffer(buffer, length)
+MockAtomicBuffer::MockAtomicBuffer(std::uint8_t *buffer, size_t length) :
+    AtomicBuffer(buffer, length),
+    m_realBuffer(buffer, length)
 {
 }
 
 MockAtomicBuffer::~MockAtomicBuffer() = default;
 
-}}};
+}}}
